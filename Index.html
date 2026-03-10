@@ -1,0 +1,2327 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Hi Chats</title>
+    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600&display=swap" rel="stylesheet">
+    
+    <!-- Libraries -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+    <script>
+      // Process Shim for React libraries
+      window.process = { env: { NODE_ENV: 'development' } };
+
+      tailwind.config = {
+        theme: {
+          extend: {
+            colors: {
+              background: '#0b141a', // WhatsApp Dark Background
+              container: '#202c33',  // WhatsApp Dark Header/Bar
+              primary: '#e9edef',    // White/Light Text
+              secondary: '#8696a0',  // Grey Text
+              bubbleMe: '#005c4b',   // Dark Green (Sent)
+              bubbleOther: '#202c33',// Dark Grey (Received)
+              accent: '#00a884',     // WhatsApp Green Accent
+              inputPill: '#2a3942',  // Input field background
+              danger: '#ef4444',     // Red for delete
+            },
+            fontFamily: {
+              sans: ['Poppins', 'sans-serif'],
+            },
+            keyframes: {
+              gradientBG: {
+                '0%': { backgroundPosition: '0% 50%' },
+                '50%': { backgroundPosition: '100% 50%' },
+                '100%': { backgroundPosition: '0% 50%' },
+              },
+              scaleIn: {
+                '0%': { transform: 'scale(0.9)', opacity: '0' },
+                '100%': { transform: 'scale(1)', opacity: '1' },
+              }
+            },
+            animation: {
+              gradientBG: 'gradientBG 3s ease infinite',
+              scaleIn: 'scaleIn 0.2s ease-out forwards',
+            }
+          }
+        }
+      }
+    </script>
+    <style>
+      ::-webkit-scrollbar { width: 5px; }
+      ::-webkit-scrollbar-thumb { background: #374045; border-radius: 3px; }
+      body { background-color: #0b141a; color: #e9edef; }
+      
+      /* Custom Checkbox Styling */
+      .custom-checkbox {
+        appearance: none;
+        background-color: transparent;
+        margin: 0;
+        font: inherit;
+        color: currentColor;
+        width: 1.5em;
+        height: 1.5em;
+        border: 2px solid #8696a0;
+        border-radius: 0.25em;
+        display: grid;
+        place-content: center;
+        transition: 0.2s;
+        cursor: pointer;
+      }
+      .custom-checkbox::before {
+        content: "";
+        width: 0.85em;
+        height: 0.85em;
+        transform: scale(0);
+        transition: 120ms transform ease-in-out;
+        box-shadow: inset 1em 1em white; /* Checkmark color */
+        background-color: white;
+        transform-origin: center;
+        clip-path: polygon(14% 44%, 0 65%, 50% 100%, 100% 16%, 80% 0%, 43% 62%);
+      }
+      .custom-checkbox:checked {
+        background-color: #00a884;
+        border-color: #00a884;
+      }
+      .custom-checkbox:checked::before {
+        transform: scale(1);
+      }
+    </style>
+
+    <script type="importmap">
+    {
+      "imports": {
+        "react": "https://esm.sh/react@18.2.0",
+        "react-dom/client": "https://esm.sh/react-dom@18.2.0/client",
+        "firebase/app": "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js",
+        "firebase/auth": "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js",
+        "firebase/database": "https://www.gstatic.com/firebasejs/10.12.2/firebase-database.js"
+      }
+    }
+    </script>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel" data-type="module" data-presets="typescript,react">
+        import React, { useState, useEffect, useRef } from 'react';
+        import ReactDOM from 'react-dom/client';
+        import { initializeApp } from "firebase/app";
+        import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, GoogleAuthProvider, signInWithPopup } from "firebase/auth";
+        import { getDatabase, ref, set, get, onValue, push, update, onDisconnect, remove, serverTimestamp, child, query, limitToLast, off } from "firebase/database";
+
+        // --- TYPES ---
+        interface UserProfile {
+          uid: string;
+          userId: string;
+          name: string;
+          bio: string;
+          emoji: string;
+          dpUrl: string;
+        }
+
+        interface ChatContact {
+          uid: string;
+          chatId: string;
+          name: string;
+          dpUrl: string;
+          status: 'online' | 'offline';
+          unreadCount: number;
+        }
+
+        interface Message {
+          id?: string;
+          text?: string;
+          audioUrl?: string;
+          imageUrl?: string;
+          videoUrl?: string;
+          fileUrl?: string;
+          fileName?: string;
+          duration?: string;
+          played?: boolean;
+          sender: string;
+          timestamp: number;
+          read?: boolean;
+          starred?: boolean;
+          isChunked?: boolean;
+          fileType?: 'image' | 'video' | 'file';
+          fileId?: string;
+        }
+
+        interface CallLog {
+          type: 'video' | 'voice';
+          duration: string;
+          timestamp: number;
+        }
+
+        interface IncomingCallData {
+          callerId: string;
+          callerName: string;
+          type: 'offer';
+          sdp: string;
+          callType: 'video' | 'voice';
+          callRoomId: string;
+        }
+
+        // --- FIREBASE CONFIG ---
+        const firebaseConfig = {
+  apiKey: "AIzaSyCopTzi_zndimqGxb7XTFqYTuO4494n0pY",
+  authDomain: "hi-chats-52224.firebaseapp.com",
+  databaseURL: "https://hi-chats-52224-default-rtdb.firebaseio.com",
+  projectId: "hi-chats-52224",
+  storageBucket: "hi-chats-52224.firebasestorage.app",
+  messagingSenderId: "307114875537",
+  appId: "1:307114875537:web:9e4dd787f07f88f4d9bd30"
+};
+
+        const app = initializeApp(firebaseConfig);
+        const auth = getAuth(app);
+        const db = getDatabase(app);
+
+        // --- COMPONENTS ---
+
+        // Gradient Button
+        const GRADIENT_CLASS = `
+          bg-[linear-gradient(45deg,#0000ff,#00008b,#ffd700,#808080,#ff0000,#a52a2a)] 
+          bg-[length:300%_300%] 
+          animate-gradientBG 
+          shadow-[0_0_15px_rgba(255,215,0,0.5)]
+          border border-white/10
+        `;
+
+        // Request Button Gradient (Golden, Grey, Green, Brown, Orange, Blue, Red)
+        const REQUEST_BTN_CLASS = `
+          bg-[linear-gradient(45deg,#FFD700,#808080,#008000,#A52A2A,#FFA500,#0000FF,#FF0000)]
+          bg-[length:300%_300%]
+          animate-gradientBG
+          w-9 h-9 rounded-full flex items-center justify-center text-white
+          shadow-md hover:scale-110 active:scale-90 transition-transform
+        `;
+
+        const GradientButton = ({ children, className = '', fullWidth, ...props }) => {
+          return (
+            <button
+              className={`
+                ${GRADIENT_CLASS}
+                ${fullWidth ? 'w-full' : ''}
+                px-5 py-3 rounded-lg text-white font-semibold 
+                transition-transform hover:scale-105 active:scale-95
+                disabled:opacity-50 disabled:cursor-not-allowed
+                ${className}
+              `}
+              {...props}
+            >
+              {children}
+            </button>
+          );
+        };
+
+        // --- Async Media Component for Chunked Files ---
+        const AsyncMedia = ({ message, isSelectionMode, onViewImage }) => {
+            const [data, setData] = useState(null);
+            const [loading, setLoading] = useState(true);
+
+            useEffect(() => {
+                if (message.isChunked && message.fileId) {
+                    get(ref(db, `fileChunks/${message.fileId}`)).then(snap => {
+                        if (snap.exists()) {
+                            const chunks = snap.val();
+                            // Sort chunks by index to ensure correct order
+                            const sortedData = Object.keys(chunks)
+                                .sort((a, b) => parseInt(a) - parseInt(b))
+                                .map(key => chunks[key])
+                                .join('');
+                            setData(sortedData);
+                        }
+                        setLoading(false);
+                    }).catch(err => {
+                        console.error("Error loading chunks", err);
+                        setLoading(false);
+                    });
+                } else {
+                    setData(message.imageUrl || message.videoUrl);
+                    setLoading(false);
+                }
+            }, [message]);
+
+            if (loading) return (
+                <div className="w-48 h-32 flex flex-col items-center justify-center bg-black/20 rounded-lg">
+                    <div className="w-8 h-8 border-4 border-accent border-t-transparent rounded-full animate-spin mb-2"></div>
+                    <span className="text-xs text-secondary">Loading media...</span>
+                </div>
+            );
+
+            const isVideo = message.fileType === 'video' || !!message.videoUrl;
+
+            if (isVideo) {
+                return (
+                    <div className="max-w-xs bg-black rounded-lg overflow-hidden">
+                        <video 
+                            src={data} 
+                            controls={!isSelectionMode} 
+                            playsInline 
+                            className="w-full max-h-[300px]" 
+                        />
+                    </div>
+                );
+            }
+            
+            // Image
+            return (
+                <div className="max-w-xs cursor-pointer hover:opacity-90 transition-opacity" onClick={() => !isSelectionMode && onViewImage && onViewImage(data)}>
+                    <img src={data} alt="media" className="rounded-lg mb-1 w-full max-h-[300px] object-cover" />
+                </div>
+            );
+        };
+
+        // --- APP LOGIC ---
+
+        const GRADIENT_TEXT_CLASS = "bg-[linear-gradient(90deg,#FFD700,#8B4513,#FFA500,#808080,#0000FF,#00008B,#FF0000)] bg-clip-text text-transparent font-bold animate-gradientBG";
+        const GRADIENT_BORDER_CLASS = "bg-[linear-gradient(45deg,#FFD700,#8B4513,#FFA500,#808080,#0000FF,#00008B,#FF0000)] bg-[length:200%_200%] animate-gradientBG";
+        const DEFAULT_AVATAR = "data:image/svg+xml;base64," + btoa(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="#cfd8dc"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 3c1.66 0 3 1.34 3 3s-1.34 3-3 3-3-1.34-3-3 1.34-3 3-3zm0 14.2c-2.5 0-4.71-1.28-6-3.22.03-1.99 4-3.08 6-3.08 1.99 0 5.97 1.09 6 3.08-1.29 1.94-3.5 3.22-6 3.22z"/></svg>`);
+
+        // Emoji List
+        const EMOJI_LIST = [
+          { char: '😀', tags: 'smile happy face' }, { char: '😃', tags: 'smile happy' }, { char: '😄', tags: 'smile happy' }, 
+          { char: '😁', tags: 'smile happy' }, { char: '😆', tags: 'laugh happy' }, { char: '😅', tags: 'sweat smile' }, 
+          { char: '🤣', tags: 'laugh roll' }, { char: '😂', tags: 'joy laugh' }, { char: '🙂', tags: 'smile' }, 
+          { char: '🙃', tags: 'upside down' }, { char: '😉', tags: 'wink' }, { char: '😊', tags: 'blush smile' }, 
+          { char: '😇', tags: 'innocent angel' }, { char: '🥰', tags: 'love hearts' }, { char: '😍', tags: 'love heart eyes' }, 
+          { char: '🤩', tags: 'star eyes' }, { char: '😘', tags: 'kiss' }, { char: '😗', tags: 'kiss' }, 
+          { char: '☺', tags: 'smile' }, { char: '😚', tags: 'kiss' }, { char: '😙', tags: 'kiss' }, 
+          { char: '😋', tags: 'yum delicious' }, { char: '😛', tags: 'tongue' }, { char: '😜', tags: 'wink tongue' }, 
+          { char: '🤪', tags: 'crazy' }, { char: '😝', tags: 'tongue' }, { char: '🤑', tags: 'money' }, 
+          { char: '🤗', tags: 'hug' }, { char: '🤭', tags: 'hand mouth' }, { char: '🤫', tags: 'shh silence' }, 
+          { char: '🤔', tags: 'think' }, { char: '🤐', tags: 'zipper' }, { char: '🤨', tags: 'eyebrow' }, 
+          { char: '😐', tags: 'neutral' }, { char: '😑', tags: 'expressionless' }, { char: '😶', tags: 'silent' }, 
+          { char: '😏', tags: 'smirk' }, { char: '😒', tags: 'unamused' }, { char: '🙄', tags: 'roll eyes' }, 
+          { char: '😬', tags: 'grimace' }, { char: '🤥', tags: 'lie pinocchio' }, { char: '😌', tags: 'relieved' }, 
+          { char: '😔', tags: 'pensive sad' }, { char: '😪', tags: 'sleepy' }, { char: '🤤', tags: 'drool' }, 
+          { char: '😴', tags: 'sleep' }, { char: '😷', tags: 'mask sick' }, { char: '🤒', tags: 'thermometer sick' }, 
+          { char: '🤕', tags: 'bandage' }, { char: '🤢', tags: 'nausea' }, { char: '🤮', tags: 'vomit' }, 
+          { char: '🤧', tags: 'sneeze' }, { char: '🥵', tags: 'hot' }, { char: '🥶', tags: 'cold' }, 
+          { char: '🥴', tags: 'woozy' }, { char: '😵', tags: 'dizzy' }, { char: '🤯', tags: 'explode mind' }, 
+          { char: '🤠', tags: 'cowboy' }, { char: '🥳', tags: 'party' }, { char: '😎', tags: 'cool sunglasses' }, 
+          { char: '🤓', tags: 'nerd' }, { char: '🧐', tags: 'monocle' }, { char: '😕', tags: 'confused' }, 
+          { char: '😟', tags: 'worried' }, { char: '🙁', tags: 'frown' }, { char: '😮', tags: 'open mouth' }, 
+          { char: '😯', tags: 'hushed' }, { char: '😲', tags: 'astonished' }, { char: '😳', tags: 'flushed' }, 
+          { char: '🥺', tags: 'pleading' }, { char: '😦', tags: 'frowning' }, { char: '😧', tags: 'anguished' }, 
+          { char: '😨', tags: 'fearful' }, { char: '😰', tags: 'sweat anxiety' }, { char: '😥', tags: 'sad sweat' }, 
+          { char: '😢', tags: 'cry' }, { char: '😭', tags: 'sob cry' }, { char: '😱', tags: 'scream' }, 
+          { char: '😖', tags: 'confounded' }, { char: '😣', tags: 'persevere' }, { char: '😞', tags: 'disappointed' }, 
+          { char: '😓', tags: 'sweat' }, { char: '😩', tags: 'weary' }, { char: '😫', tags: 'tired' }, 
+          { char: '🥱', tags: 'yawn' }, { char: '😤', tags: 'triumph steam' }, { char: '😡', tags: 'rage mad' }, 
+          { char: '😠', tags: 'angry' }, { char: '🤬', tags: 'curse' }, { char: '😈', tags: 'devil' }, 
+          { char: '👿', tags: 'devil' }, { char: '💀', tags: 'skull' }, { char: '☠', tags: 'skull crossbones' }, 
+          { char: '💩', tags: 'poop' }, { char: '🤡', tags: 'clown' }, { char: '👹', tags: 'ogre' }, 
+          { char: '👺', tags: 'goblin' }, { char: '👻', tags: 'ghost' }, { char: '👽', tags: 'alien' }, 
+          { char: '👾', tags: 'monster' }, { char: '🤖', tags: 'robot' }, { char: '😺', tags: 'cat' }, 
+          { char: '😸', tags: 'cat smile' }, { char: '😹', tags: 'cat joy' }, { char: '😻', tags: 'cat love' }, 
+          { char: '😼', tags: 'cat smirk' }, { char: '😽', tags: 'cat kiss' }, { char: '🙀', tags: 'cat scream' }, 
+          { char: '😿', tags: 'cat cry' }, { char: '😾', tags: 'cat mad' }, { char: '👋', tags: 'wave hand' }, 
+          { char: '🤚', tags: 'back of hand' }, { char: '🖐', tags: 'fingers' }, { char: '✋', tags: 'hand stop' }, 
+          { char: '🖖', tags: 'vulcan' }, { char: '👌', tags: 'ok' }, { char: '🤏', tags: 'pinch' }, 
+          { char: '✌', tags: 'peace victory' }, { char: '🤞', tags: 'fingers crossed' }, { char: '🤟', tags: 'love you' }, 
+          { char: '🤘', tags: 'rock' }, { char: '🤙', tags: 'call me' }, { char: '👈', tags: 'point left' }, 
+          { char: '👉', tags: 'point right' }, { char: '👆', tags: 'point up' }, { char: '🖕', tags: 'middle finger' }, 
+          { char: '👇', tags: 'point down' }, { char: '☝', tags: 'point up' }, { char: '👍', tags: 'thumbs up' }, 
+          { char: '👎', tags: 'thumbs down' }, { char: '✊', tags: 'fist' }, { char: '👊', tags: 'fist bump' }, 
+          { char: '🤛', tags: 'fist left' }, { char: '🤜', tags: 'fist right' }, { char: '👏', tags: 'clap' }, 
+          { char: '🙌', tags: 'hands up' }, { char: '👐', tags: 'open hands' }, { char: '🤲', tags: 'palms up' }, 
+          { char: '🤝', tags: 'handshake' }, { char: '🙏', tags: 'pray' }, { char: '💅', tags: 'nail polish' }, 
+          { char: '🤳', tags: 'selfie' }, { char: '💪', tags: 'muscle strong' }, { char: '🧠', tags: 'brain' }, 
+          { char: '👄', tags: 'mouth' }, { char: '🦷', tags: 'tooth' }, { char: '🦴', tags: 'bone' }, 
+          { char: '👀', tags: 'eyes' }, { char: '👁', tags: 'eye' }, { char: '👅', tags: 'tongue' }, 
+          { char: '👃', tags: 'nose' }, { char: '👂', tags: 'ear' }, { char: '🦻', tags: 'ear with hearing aid' }, 
+          { char: '🦶', tags: 'foot' }, { char: '🦵', tags: 'leg' }, { char: '🦵', tags: 'leg' }, 
+          { char: '❤️', tags: 'love heart red' }, { char: '🧡', tags: 'love heart orange' }, { char: '💛', tags: 'love heart yellow' }, 
+          { char: '💚', tags: 'love heart green' }, { char: '💙', tags: 'love heart blue' }, { char: '💜', tags: 'love heart purple' }, 
+          { char: '🖤', tags: 'love heart black' }, { char: '🤍', tags: 'love heart white' }, { char: '🤎', tags: 'love heart brown' }, 
+          { char: '💔', tags: 'broken heart' }, { char: '❣️', tags: 'heart exclamation' }, { char: '💕', tags: 'two hearts' }, 
+          { char: '💞', tags: 'revolving hearts' }, { char: '💓', tags: 'beating heart' }, { char: '💗', tags: 'growing heart' }, 
+          { char: '💖', tags: 'sparkling heart' }, { char: '💘', tags: 'heart with arrow' }, { char: '💝', tags: 'heart with ribbon' },
+          { char: '💟', tags: 'heart decoration' }, { char: '🔥', tags: 'fire hot lit' }, { char: '✨', tags: 'sparkles' },
+          { char: '🌟', tags: 'star' }, { char: '💯', tags: '100 score' }, { char: '💥', tags: 'boom collision' }
+        ];
+
+        // --- Icons ---
+        const VideoIcon = ({ className }) => (
+          <svg viewBox="0 0 24 24" width="24" height="24" stroke="currentColor" strokeWidth="2" fill="none" strokeLinecap="round" strokeLinejoin="round" className={className || "text-secondary hover:text-primary transition-colors"}><path d="M23 7l-7 5 7 5V7z"></path><rect x="1" y="5" width="15" height="14" rx="2" ry="2"></rect></svg>
+        );
+        const PhoneIcon = ({ className }) => (
+          <svg viewBox="0 0 24 24" width="20" height="20" stroke="currentColor" strokeWidth="2" fill="none" strokeLinecap="round" strokeLinejoin="round" className={className || "text-secondary hover:text-primary transition-colors"}><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"></path></svg>
+        );
+        const SearchIcon = () => (
+          <svg viewBox="0 0 24 24" width="20" height="20" stroke="currentColor" strokeWidth="2" fill="none" strokeLinecap="round" strokeLinejoin="round" className="text-secondary transition-colors"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+        );
+        const MenuIcon = () => (
+          <svg viewBox="0 0 24 24" width="24" height="24" stroke="currentColor" strokeWidth="2" fill="none" strokeLinecap="round" strokeLinejoin="round" className="text-secondary hover:text-primary transition-colors"><circle cx="12" cy="12" r="1"></circle><circle cx="12" cy="5" r="1"></circle><circle cx="12" cy="19" r="1"></circle></svg>
+        );
+        const MicIcon = () => (
+          <svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor" className="text-secondary hover:text-primary"><path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3z"/><path d="M17 11c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/></svg>
+        );
+        const PlayIcon = () => (
+          <svg viewBox="0 0 24 24" width="24" height="24" fill="#aebac1"><path d="M8 5v14l11-7z"/></svg>
+        );
+        const PauseIcon = () => (
+          <svg viewBox="0 0 24 24" width="24" height="24" fill="#aebac1"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>
+        );
+        const SendIcon = () => (
+          <svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor" className="text-secondary"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"></path></svg>
+        );
+        const DocumentIcon = () => (
+          <svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor" className="text-purple-500"><path d="M14 2H6c-1.1 0-1.99.9-1.99 2L4 20c0 1.1.89 2 1.99 2H18c1.1 0 2-.9 2-2V8l-6-6zm2 16H8v-2h8v2zm0-4H8v-2h8v2zm-3-5V3.5L18.5 9H13z"/></svg>
+        );
+        const GalleryIcon = () => (
+          <svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor" className="text-blue-500"><path d="M21 19V5c0-1.1-.9-2-2-2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2zM8.5 13.5l2.5 3.01L14.5 12l4.5 6H5l3.5-4.5z"/></svg>
+        );
+        const CameraAltIcon = () => (
+          <svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor" className="text-pink-500"><path d="M9 2L7.17 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2h-3.17L15 2H9zm6 15c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5z"/></svg>
+        );
+        const DownloadIcon = () => (
+          <svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor" className="text-primary"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg>
+        );
+        const CalendarIcon = () => (
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor" className="text-secondary hover:text-primary"><path d="M19 3h-1V1h-2v2H8V1H6v2H5c-1.11 0-1.99.9-1.99 2L3 19c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 16H5V8h14v11zM7 10h5v5H7z"></path></svg>
+        );
+        const TrashIcon = ({ className }) => (
+          <svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor" className={className}><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>
+        );
+        const CopyIcon = ({ className }) => (
+          <svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor" className={className}><path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg>
+        );
+        const StarIcon = ({ className }) => (
+          <svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor" className={className}><path d="M22 9.24l-7.19-.62L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21 12 17.27 18.18 21l-1.63-7.03L22 9.24zM12 15.4l-3.76 2.27 1-4.28-3.32-2.88 4.38-.38L12 6.1l1.71 4.04 4.38.38-3.32 2.88 1 4.28L12 15.4z"/></svg>
+        );
+        const StarFilledIcon = ({ className }) => (
+          <svg viewBox="0 0 24 24" width="12" height="12" fill="currentColor" className={className}><path d="M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"/></svg>
+        );
+        const BlockIcon = ({ className }) => (
+          <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" strokeWidth="2" className={className} strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="4.93" y1="4.93" x2="19.07" y2="19.07"></line></svg>
+        );
+
+        // Helper: Generate DP
+        const emojiToSVG = (content) => {
+          const text = (content || "?").substring(0, 2);
+          const svgString = `
+          <svg xmlns="http://www.w3.org/2000/svg" width="100" height="100" viewBox="0 0 100 100">
+              <rect width="100" height="100" fill="#202c33"/>
+              <text x="50" y="55" font-family="Arial" font-size="50" fill="#e9edef" text-anchor="middle" dominant-baseline="middle">${text}</text>
+          </svg>`;
+          return "data:image/svg+xml;base64," + btoa(unescape(encodeURIComponent(svgString)));
+        };
+
+        const generateUniqueId = () => 'ar-' + Math.floor(1000 + Math.random() * 9000);
+
+        // WebRTC Config
+        const rtcConfig = {
+          iceServers: [{ urls: "stun:stun.l.google.com:19302" }]
+        };
+
+        // --- Custom Calendar Component ---
+        const CustomCalendar = ({ isOpen, onClose, onSelect, minDate, maxDate }) => {
+            const [currentMonth, setCurrentMonth] = useState(new Date());
+            const [selectedDate, setSelectedDate] = useState(null);
+
+            useEffect(() => {
+                if (isOpen) {
+                    setCurrentMonth(new Date()); // Reset to today when opened
+                }
+            }, [isOpen]);
+
+            if (!isOpen) return null;
+
+            const daysInMonth = (year, month) => new Date(year, month + 1, 0).getDate();
+            const firstDayOfMonth = (year, month) => {
+                let day = new Date(year, month, 1).getDay();
+                return day === 0 ? 6 : day - 1; // Adjust for Mon=0, Sun=6
+            };
+
+            const year = currentMonth.getFullYear();
+            const month = currentMonth.getMonth();
+            const totalDays = daysInMonth(year, month);
+            const startDay = firstDayOfMonth(year, month);
+            
+            const today = new Date();
+            const isSameDay = (d1, d2) => d1.getDate() === d2.getDate() && d1.getMonth() === d2.getMonth() && d1.getFullYear() === d2.getFullYear();
+
+            const renderDays = () => {
+                let days = [];
+                // Padding
+                for (let i = 0; i < startDay; i++) {
+                    days.push(<div key={`pad-${i}`} className="w-8 h-8"></div>);
+                }
+                // Days
+                for (let i = 1; i <= totalDays; i++) {
+                    const date = new Date(year, month, i);
+                    const isToday = isSameDay(date, today);
+                    const isSelected = selectedDate && isSameDay(date, selectedDate);
+                    
+                    days.push(
+                        <div 
+                            key={i} 
+                            onClick={() => {
+                                setSelectedDate(date);
+                                // Format for search: YYYY-MM-DD
+                                const y = date.getFullYear();
+                                const m = String(date.getMonth() + 1).padStart(2, '0');
+                                const d = String(date.getDate()).padStart(2, '0');
+                                onSelect(`${y}-${m}-${d}`);
+                                onClose();
+                            }}
+                            className={`w-8 h-8 flex items-center justify-center text-sm rounded-full cursor-pointer transition-colors
+                                ${isSelected ? 'bg-white text-black font-bold' : 'text-primary hover:bg-[#2a3942]'}
+                                ${isToday && !isSelected ? 'text-[#00a884] font-bold border border-[#00a884]' : ''}
+                            `}
+                        >
+                            {i}
+                        </div>
+                    );
+                }
+                return days;
+            };
+
+            const prevMonth = () => {
+                const next = new Date(currentMonth);
+                next.setMonth(currentMonth.getMonth() - 1);
+                if (next >= minDate) setCurrentMonth(next);
+            };
+
+            const nextMonth = () => {
+                const next = new Date(currentMonth);
+                next.setMonth(currentMonth.getMonth() + 1);
+                if (next <= maxDate) setCurrentMonth(next);
+            };
+
+            const monthNames = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+
+            return (
+                <div className="absolute inset-0 z-[60] bg-black/50 backdrop-blur-sm flex items-center justify-center animate-scaleIn" onClick={onClose}>
+                    <div className="bg-[#202c33] p-4 rounded-xl shadow-2xl w-[320px] border border-gray-700" onClick={e => e.stopPropagation()}>
+                        <div className="flex justify-between items-center mb-4 text-primary">
+                            <button onClick={prevMonth} className={`p-1 hover:bg-[#2a3942] rounded-full ${currentMonth <= minDate ? 'opacity-30 cursor-not-allowed' : ''}`}>
+                                <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor"><path d="M15.41 7.41L14 6l-6 6 6 6 1.41-1.41L10.83 12z"/></svg>
+                            </button>
+                            <span className="font-semibold text-lg">{monthNames[month]} {year}</span>
+                            <button onClick={nextMonth} className={`p-1 hover:bg-[#2a3942] rounded-full ${currentMonth >= maxDate ? 'opacity-30 cursor-not-allowed' : ''}`}>
+                                <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor"><path d="M10 6L8.59 7.41 13.17 12l-4.58 4.59L10 18l6-6z"/></svg>
+                            </button>
+                        </div>
+                        <div className="grid grid-cols-7 gap-1 text-center mb-2">
+                            {['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map(d => <span key={d} className="text-xs text-secondary font-medium">{d}</span>)}
+                        </div>
+                        <div className="grid grid-cols-7 gap-1 place-items-center">
+                            {renderDays()}
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
+        function App() {
+          const [currentUser, setCurrentUser] = useState(null);
+          const [userProfile, setUserProfile] = useState(null);
+          const [loading, setLoading] = useState(true);
+          const [view, setView] = useState('auth');
+
+          // Main View Tabs
+          const [activeTab, setActiveTab] = useState('contacts');
+          
+          // Data
+          const [contacts, setContacts] = useState([]);
+          const [requests, setRequests] = useState([]);
+          const [callLogs, setCallLogs] = useState([]);
+
+          // Search
+          const [searchTerm, setSearchTerm] = useState('');
+
+          // Chat
+          const [currentChatId, setCurrentChatId] = useState(null);
+          const [currentChatUser, setCurrentChatUser] = useState(null);
+          
+          // Calls
+          const [incomingCall, setIncomingCall] = useState(null);
+          const [isInCall, setIsInCall] = useState(false);
+          const [callStatus, setCallStatus] = useState('');
+          const [isMuted, setIsMuted] = useState(false);
+          const currentCallType = useRef('voice');
+          
+          // Side Menu Image Upload
+          const sideMenuFileRef = useRef(null);
+
+          // Refs for WebRTC
+          const localVideoRef = useRef(null);
+          const remoteVideoRef = useRef(null);
+          const peerConnectionRef = useRef(null);
+          const localStreamRef = useRef(null);
+          const toneOscillatorRef = useRef(null);
+          const iceCandidatesQueue = useRef([]);
+          
+          // Draggable Local Video
+          const [dragPos, setDragPos] = useState({ x: 0, y: 0 });
+          const dragRef = useRef({
+            isDragging: false, startX: 0, startY: 0, initialX: 0, initialY: 0
+          });
+
+          // Badge Counts Calculations
+          const totalUnreadMessages = contacts.reduce((sum, c) => sum + (c.unreadCount || 0), 0);
+          const totalRequests = requests.length;
+          const totalMissedCalls = callLogs.filter(log => log.duration === '0:00').length;
+
+          // HELPER: Clear State
+          const clearState = () => {
+             setContacts([]);
+             setRequests([]);
+             setCallLogs([]);
+             setCurrentChatId(null);
+             setCurrentChatUser(null);
+             setIncomingCall(null);
+             setIsInCall(false);
+             setCallStatus('');
+             if(toneOscillatorRef.current) {
+                try { toneOscillatorRef.current.stop(); toneOscillatorRef.current.dispose(); } catch(e){}
+                toneOscillatorRef.current = null;
+             }
+          };
+
+          // Auth Listener
+          useEffect(() => {
+            const unsubscribe = onAuthStateChanged(auth, async (user) => {
+              // Always clear previous user data first to avoid bleed-through
+              clearState();
+
+              if (user) {
+                setCurrentUser(user);
+                const snapshot = await get(child(ref(db), `users/${user.uid}`));
+                if (snapshot.exists()) {
+                  setUserProfile(snapshot.val());
+                  setView('main');
+                  setupPresence(user.uid);
+                  loadAppData(user.uid);
+                } else {
+                  setView('setup');
+                }
+              } else {
+                setCurrentUser(null);
+                setUserProfile(null);
+                setView('auth');
+              }
+              setLoading(false);
+            });
+            return () => unsubscribe();
+          }, []);
+
+          const setupPresence = (uid) => {
+            const userStatusRef = ref(db, `/users/${uid}/status`);
+            const connectedRef = ref(db, '.info/connected');
+            onValue(connectedRef, (snap) => {
+              if (snap.val() === true) {
+                onDisconnect(userStatusRef).set({state: 'offline', last_changed: serverTimestamp()})
+                .then(() => {
+                  set(userStatusRef, {state: 'online', last_changed: serverTimestamp()});
+                });
+              }
+            });
+          };
+
+          const loadAppData = (uid) => {
+            // Contacts
+            onValue(ref(db, `contacts/${uid}`), (snapshot) => {
+              if (!snapshot.exists()) {
+                  setContacts([]);
+                  return;
+              }
+              const loadedContacts = [];
+              snapshot.forEach((childSnap) => {
+                const friendUid = childSnap.key;
+                const chatId = childSnap.val().chatId;
+                // Fetch details (simplified nested fetch for React)
+                get(ref(db, `users/${friendUid}`)).then((uSnap) => {
+                    const uData = uSnap.val();
+                    if(uData) {
+                       onValue(ref(db, `unreadCounts/${uid}/${chatId}`), (cSnap) => {
+                         const unread = cSnap.val() || 0;
+                         onValue(ref(db, `users/${friendUid}/status`), (sSnap) => {
+                           const status = sSnap.val()?.state || 'offline';
+                           setContacts(prev => {
+                             const filtered = prev.filter(c => c.uid !== friendUid);
+                             return [...filtered, {
+                               uid: friendUid,
+                               chatId,
+                               name: uData.name,
+                               dpUrl: uData.dpUrl,
+                               status,
+                               unreadCount: unread
+                             }].sort((a,b) => a.name.localeCompare(b.name));
+                           });
+                         });
+                       });
+                    }
+                });
+              });
+            });
+
+            // Requests
+            onValue(ref(db, `requests/${uid}`), (snapshot) => {
+              if(!snapshot.exists()) {
+                  setRequests([]);
+                  return;
+              }
+              const reqs = [];
+              snapshot.forEach(c => {
+                const rUid = c.key;
+                get(ref(db, `users/${rUid}`)).then(u => {
+                  setRequests(prev => {
+                     const exist = prev.find(p => p.uid === rUid);
+                     if(exist) return prev;
+                     return [...prev, { uid: rUid, ...u.val() }];
+                  });
+                });
+              });
+            });
+
+            // Calls Listener
+            onValue(ref(db, `calls/${uid}`), (snapshot) => {
+              const data = snapshot.val();
+              if(data && data.type === 'offer' && !isInCall) {
+                setIncomingCall({ ...data, key: snapshot.key });
+              } else if (!data) {
+                setIncomingCall(null);
+                // Stop ringtone if call cancelled remotely
+                if(toneOscillatorRef.current) { 
+                   try {
+                     toneOscillatorRef.current.stop(); 
+                     toneOscillatorRef.current.dispose(); 
+                   } catch(e) {}
+                   toneOscillatorRef.current = null; 
+                }
+              }
+            });
+
+            // Call Logs
+            onValue(query(ref(db, `callLogs/${uid}`), limitToLast(20)), (snap) => {
+               const logs = [];
+               snap.forEach(c => { logs.push(c.val()); });
+               setCallLogs(logs.reverse());
+            });
+          };
+
+          // Ringtone Management
+          useEffect(() => {
+            if (incomingCall && !isInCall) {
+               // Start Ringtone logic
+               if (typeof Tone !== 'undefined') {
+                  try {
+                     if(Tone.context.state !== 'running') Tone.context.resume();
+                     const osc = new Tone.Oscillator(440, "sine").toDestination().start();
+                     osc.volume.value = -10;
+                     toneOscillatorRef.current = osc;
+                  } catch(e) { console.log("Ringtone blocked", e); }
+               }
+            } else {
+               // Cleanup if call answered or ended
+               if (toneOscillatorRef.current) {
+                  try {
+                    toneOscillatorRef.current.stop();
+                    toneOscillatorRef.current.dispose();
+                  } catch(e) {}
+                  toneOscillatorRef.current = null;
+               }
+            }
+          }, [incomingCall, isInCall]);
+
+          // Fix for local video attachment race condition
+          useEffect(() => {
+            if (isInCall && localVideoRef.current && localStreamRef.current) {
+               localVideoRef.current.srcObject = localStreamRef.current;
+               const videoTracks = localStreamRef.current.getVideoTracks();
+               if (videoTracks.length === 0 || videoTracks.every(t => !t.enabled)) {
+                   localVideoRef.current.style.opacity = '0';
+               } else {
+                   localVideoRef.current.style.opacity = '1';
+               }
+            }
+          }, [isInCall]);
+
+          // --- Handlers ---
+          const handleDragStart = (e) => {
+            const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+            const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+            
+            dragRef.current = {
+              isDragging: true,
+              startX: clientX,
+              startY: clientY,
+              initialX: dragPos.x,
+              initialY: dragPos.y
+            };
+          };
+
+          const handleDragMove = (e) => {
+            if (!dragRef.current.isDragging) return;
+            e.preventDefault();
+            const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+            const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+            
+            setDragPos({
+              x: dragRef.current.initialX + (clientX - dragRef.current.startX),
+              y: dragRef.current.initialY + (clientY - dragRef.current.startY)
+            });
+          };
+
+          const handleDragEnd = () => { dragRef.current.isDragging = false; };
+          
+          const handleSideMenuFileSelect = (e) => {
+            const file = e.target.files?.[0];
+            if (file) {
+              const reader = new FileReader();
+              reader.onload = (event) => {
+                const img = new Image();
+                img.onload = () => {
+                    const canvas = document.createElement('canvas');
+                    const MAX_SIZE = 300; 
+                    let width = img.width;
+                    let height = img.height;
+                    if (width > height) {
+                        if (width > MAX_SIZE) {
+                            height *= MAX_SIZE / width;
+                            width = MAX_SIZE;
+                        }
+                    } else {
+                        if (height > MAX_SIZE) {
+                            width *= MAX_SIZE / height;
+                            height = MAX_SIZE;
+                        }
+                    }
+                    canvas.width = width;
+                    canvas.height = height;
+                    const ctx = canvas.getContext("2d");
+                    ctx.drawImage(img, 0, 0, width, height);
+                    const dataUrl = canvas.toDataURL("image/jpeg", 0.7);
+                    
+                    update(ref(db, `users/${currentUser.uid}`), { dpUrl: dataUrl });
+                    setUserProfile(prev => ({ ...prev, dpUrl: dataUrl }));
+                };
+                img.src = event.target.result;
+              };
+              reader.readAsDataURL(file);
+            }
+          };
+
+          // --- Render ---
+          if (loading) return (
+            <div className="flex flex-col h-screen items-center justify-center bg-background">
+                <div className="relative">
+                    <div className="w-16 h-16 border-4 border-container rounded-full"></div>
+                    <div className="absolute top-0 left-0 w-16 h-16 border-4 border-accent border-t-transparent rounded-full animate-spin"></div>
+                </div>
+                <div className="mt-4 text-accent font-medium animate-pulse">Loading Hi Chats...</div>
+            </div>
+          );
+          if (view === 'auth') return <AuthView onLogin={() => {}} />;
+          if (view === 'setup') return (
+             <ProfileSetupView 
+                user={currentUser} 
+                onComplete={(profile) => {
+                    setUserProfile(profile);
+                    setView('main');
+                    setupPresence(currentUser.uid);
+                    loadAppData(currentUser.uid);
+                }} 
+             />
+          );
+
+          return (
+            <div className="flex flex-col h-screen max-w-md mx-auto bg-background relative overflow-hidden shadow-2xl">
+              {/* Header */}
+              <header className="flex justify-between items-center p-4 bg-container shadow-sm z-10 text-primary">
+                <div className="flex items-center gap-2">
+                  <button onClick={() => document.getElementById('side-menu')?.classList.toggle('translate-x-[-100%]')} className="text-xl">☰</button>
+                  <span className="font-semibold text-lg">Hi Chats</span>
+                </div>
+                <button 
+                  onClick={() => document.getElementById('add-friend-modal')?.classList.remove('hidden')} 
+                  className="w-9 h-9 rounded-full flex items-center justify-center bg-inputPill border border-gray-700 hover:bg-container transition-all"
+                >
+                  <span className="text-xl font-light text-accent pb-0.5">+</span>
+                </button>
+              </header>
+
+              {/* Main Content */}
+              <main className="flex-1 overflow-y-auto relative bg-background">
+                {activeTab === 'contacts' && (
+                  <div className="flex flex-col">
+                     {/* Search Bar - Fixed with Gradient Border */}
+                     <div className="px-4 py-3 sticky top-0 bg-background z-20">
+                        <div className={`rounded-full p-[1.5px] ${GRADIENT_BORDER_CLASS} shadow-lg`}>
+                           <div className="relative bg-inputPill rounded-full flex items-center p-2">
+                              <span className="text-secondary ml-2 mr-2"><SearchIcon /></span>
+                              <input 
+                                  type="text" 
+                                  placeholder="Search..."
+                                  className="bg-transparent border-none outline-none text-primary w-full text-sm placeholder-secondary"
+                                  value={searchTerm}
+                                  onChange={e => setSearchTerm(e.target.value)}
+                              />
+                           </div>
+                        </div>
+                     </div>
+
+                     {contacts
+                       .filter(c => c.name.toLowerCase().includes(searchTerm.toLowerCase()))
+                       .map(c => (
+                       <div key={c.uid} onClick={() => { setCurrentChatId(c.chatId); setCurrentChatUser(c); }} className="flex items-center p-4 border-b border-container cursor-pointer hover:bg-container transition">
+                         <img src={c.dpUrl} className="w-12 h-12 rounded-full mr-4 bg-gray-800 object-cover" alt="dp" />
+                         <div className="flex-1">
+                           <div className="font-medium text-primary">{c.name}</div>
+                           <div className="text-xs text-secondary">{c.status === 'online' ? 'Online' : 'Offline'}</div>
+                         </div>
+                         {c.unreadCount > 0 && <span className="bg-accent text-black text-xs font-bold px-2 py-1 rounded-full">{c.unreadCount}</span>}
+                       </div>
+                     ))}
+                     {contacts.length === 0 && <div className="p-8 text-center text-secondary">No contacts yet. Add friends!</div>}
+                  </div>
+                )}
+                {activeTab === 'requests' && (
+                   <div className="flex flex-col">
+                      <div className="p-4 text-secondary text-sm">Friend Requests</div>
+                      {requests.map(r => (
+                         <div key={r.uid} className="flex justify-between items-center p-4 border-b border-container">
+                           <div className="flex items-center gap-3">
+                              <img src={r.dpUrl} className="w-8 h-8 rounded-full" alt="dp" />
+                              <span className="text-primary">{r.name}</span>
+                           </div>
+                           <div className="flex gap-2">
+                              <button onClick={() => {
+                                  const chatId = [currentUser.uid, r.uid].sort().join('_');
+                                  const updates = {};
+                                  updates[`contacts/${currentUser.uid}/${r.uid}`] = { chatId };
+                                  updates[`contacts/${r.uid}/${currentUser.uid}`] = { chatId };
+                                  updates[`requests/${currentUser.uid}/${r.uid}`] = null;
+                                  update(ref(db), updates);
+                              }} className={REQUEST_BTN_CLASS}>✓</button>
+                              <button onClick={() => set(ref(db, `requests/${currentUser.uid}/${r.uid}`), null)} className={REQUEST_BTN_CLASS}>✕</button>
+                           </div>
+                         </div>
+                      ))}
+                   </div>
+                )}
+                {activeTab === 'calls' && (
+                  <div className="flex flex-col">
+                    <div className="p-4 text-secondary text-sm">Call History</div>
+                    {callLogs.map((log, i) => {
+                      // Logic for Missed Call styling
+                      const isMissed = log.duration === '0:00';
+                      return (
+                        <div key={i} className="flex items-center p-4 border-b border-container text-primary">
+                          <div className={`text-2xl mr-4 ${isMissed ? 'text-red-500' : 'text-secondary'}`}>
+                             {log.type === 'video' ? '📹' : '📞'}
+                          </div>
+                          <div>
+                            <div className={`text-sm uppercase font-medium ${isMissed ? 'text-red-500' : ''}`}>
+                               {isMissed ? `Missed ${log.type} call` : `${log.type} - ${log.duration}`}
+                            </div>
+                            <div className="text-xs text-secondary">{new Date(log.timestamp).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}</div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </main>
+
+              {/* Bottom Nav with Gradient Text for Active Tab */}
+              <nav className="h-[60px] bg-container flex justify-around items-center border-t border-gray-800">
+                 <div onClick={() => setActiveTab('contacts')} className={`relative flex flex-col items-center cursor-pointer transition-transform ${activeTab === 'contacts' ? 'scale-110' : 'text-secondary'}`}>
+                   <span className={`text-xl ${activeTab === 'contacts' ? GRADIENT_TEXT_CLASS : ''}`}>💬</span>
+                   <span className={`text-[10px] ${activeTab === 'contacts' ? GRADIENT_TEXT_CLASS : ''}`}>Chats</span>
+                   {totalUnreadMessages > 0 && (
+                      <span className="absolute -top-1 -right-2 bg-red-500 text-white text-[10px] font-bold px-1.5 rounded-full min-w-[18px] text-center border-2 border-container">
+                        {totalUnreadMessages}
+                      </span>
+                   )}
+                 </div>
+                 <div onClick={() => setActiveTab('requests')} className={`relative flex flex-col items-center cursor-pointer transition-transform ${activeTab === 'requests' ? 'scale-110' : 'text-secondary'}`}>
+                   <span className={`text-xl ${activeTab === 'requests' ? GRADIENT_TEXT_CLASS : ''}`}>👥</span>
+                   <span className={`text-[10px] ${activeTab === 'requests' ? GRADIENT_TEXT_CLASS : ''}`}>Requests</span>
+                   {totalRequests > 0 && (
+                      <span className="absolute -top-1 -right-2 bg-red-500 text-white text-[10px] font-bold px-1.5 rounded-full min-w-[18px] text-center border-2 border-container">
+                        {totalRequests}
+                      </span>
+                   )}
+                 </div>
+                 <div onClick={() => setActiveTab('calls')} className={`relative flex flex-col items-center cursor-pointer transition-transform ${activeTab === 'calls' ? 'scale-110' : 'text-secondary'}`}>
+                   <span className={`text-xl ${activeTab === 'calls' ? GRADIENT_TEXT_CLASS : ''}`}>📞</span>
+                   <span className={`text-[10px] ${activeTab === 'calls' ? GRADIENT_TEXT_CLASS : ''}`}>Calls</span>
+                   {totalMissedCalls > 0 && (
+                      <span className="absolute -top-1 -right-2 bg-red-500 text-white text-[10px] font-bold px-1.5 rounded-full min-w-[18px] text-center border-2 border-container">
+                        {totalMissedCalls}
+                      </span>
+                   )}
+                 </div>
+              </nav>
+
+              {/* Side Menu */}
+              <div id="side-menu" className="absolute top-0 left-0 w-[70%] h-full bg-container z-20 transition-transform transform translate-x-[-100%] shadow-2xl p-6 border-r border-gray-800">
+                <div className="text-center mb-8">
+                   <div className="relative inline-block cursor-pointer group" onClick={() => sideMenuFileRef.current?.click()}>
+                     <img 
+                        src={userProfile?.dpUrl || DEFAULT_AVATAR} 
+                        onError={(e) => e.target.src = DEFAULT_AVATAR} 
+                        className="w-20 h-20 rounded-full mx-auto mb-2 border-2 border-accent bg-gray-800 object-cover" 
+                        alt="profile" 
+                     />
+                     <div className="absolute inset-0 flex items-center justify-center bg-black/30 rounded-full opacity-0 group-hover:opacity-100 transition-opacity">
+                        <span className="text-white text-xs">Edit</span>
+                     </div>
+                   </div>
+                   <input 
+                      type="file" 
+                      ref={sideMenuFileRef} 
+                      className="hidden" 
+                      accept="image/*" 
+                      onChange={handleSideMenuFileSelect} 
+                   />
+                   <h3 className="font-semibold text-lg text-primary">{userProfile?.name}</h3>
+                   <p className="text-secondary text-sm">{userProfile?.userId}</p>
+                   <p className="text-secondary text-xs mt-1">{userProfile?.bio}</p>
+                </div>
+                <GradientButton fullWidth onClick={() => signOut(auth)}>Logout</GradientButton>
+                <button onClick={() => document.getElementById('side-menu')?.classList.add('translate-x-[-100%]')} className="mt-4 w-full text-center text-secondary text-sm">Close Menu</button>
+              </div>
+
+              {/* Add Friend Modal */}
+              <div id="add-friend-modal" className="absolute inset-0 z-50 hidden flex items-center justify-center bg-black/70 backdrop-blur-sm p-4">
+                 <div className="w-full max-w-sm bg-container border border-gray-700 rounded-2xl p-6 shadow-2xl relative">
+                     <div className="flex justify-between items-center mb-6">
+                       <h2 className="text-xl font-bold text-accent">Add Friend</h2>
+                       <button onClick={() => document.getElementById('add-friend-modal')?.classList.add('hidden')} className="text-secondary hover:text-primary">✕</button>
+                     </div>
+                     <div className="space-y-4">
+                       <input id="search-input" type="text" placeholder="Enter User ID (ar-xxxx)" className="w-full bg-inputPill border border-gray-700 p-3 rounded-xl text-primary outline-none focus:ring-1 focus:ring-accent placeholder-secondary" />
+                       <GradientButton fullWidth onClick={async () => {
+                           const val = document.getElementById('search-input').value.trim();
+                           const resEl = document.getElementById('search-result');
+                           if(!resEl) return;
+                           
+                           const snap = await get(ref(db, `publicUsers/${val}`));
+                           if(snap.exists()) {
+                             const targetUid = snap.val().uid;
+                             if(targetUid === currentUser?.uid) { resEl.innerText = "Can't add self."; return; }
+                             await set(ref(db, `requests/${targetUid}/${currentUser?.uid}`), { timestamp: serverTimestamp() });
+                             resEl.innerText = "Request Sent!";
+                             resEl.className = "mt-4 text-center text-sm text-green-500 font-semibold";
+                           } else {
+                             resEl.innerText = "User not found.";
+                             resEl.className = "mt-4 text-center text-sm text-red-500 font-semibold";
+                           }
+                       }}>Search & Request</GradientButton>
+                     </div>
+                     <p id="search-result" className="mt-4 text-center text-sm text-secondary"></p>
+                 </div>
+              </div>
+
+              {/* Chat Screen */}
+              {currentChatId && currentChatUser && currentUser && userProfile && (
+                <ChatScreen 
+                   chatId={currentChatId} 
+                   user={currentChatUser} 
+                   currentUser={currentUser}
+                   myProfile={userProfile}
+                   onClose={() => { setCurrentChatId(null); setCurrentChatUser(null); }}
+                   onCall={(video) => startCall(video, currentChatUser.uid, currentUser.uid)}
+                />
+              )}
+
+              {/* Call Screen */}
+              {(incomingCall || isInCall) && (
+                <CallScreen 
+                   incoming={incomingCall}
+                   isInCall={isInCall}
+                   onAccept={() => handleIncomingCall(incomingCall)}
+                   onReject={() => setIncomingCall(null)}
+                   onEnd={endCall}
+                   localRef={localVideoRef}
+                   remoteRef={remoteVideoRef}
+                   status={callStatus}
+                   isMuted={isMuted}
+                   onToggleMute={() => {
+                     if(localStreamRef.current) {
+                        const track = localStreamRef.current.getAudioTracks()[0];
+                        track.enabled = !track.enabled;
+                        setIsMuted(!track.enabled);
+                     }
+                   }}
+                   dragHandlers={{
+                     onMouseDown: handleDragStart,
+                     onTouchStart: handleDragStart,
+                     onMouseMove: handleDragMove,
+                     onTouchMove: handleDragMove,
+                     onMouseUp: handleDragEnd,
+                     onTouchEnd: handleDragEnd,
+                     style: { transform: `translate3d(${dragPos.x}px, ${dragPos.y}px, 0)` }
+                   }}
+                />
+              )}
+            </div>
+          );
+
+          // --- Functions ---
+          async function startCall(video, targetUid, myUid) {
+            currentCallType.current = video ? 'video' : 'voice';
+            if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+              alert("Media devices not supported. Please use a secure connection (HTTPS) or localhost.");
+              return;
+            }
+
+            // Check if blocked before starting call (Basic check, ideal world check DB too)
+            const blockedSnap = await get(ref(db, `blocked/${myUid}/${targetUid}`));
+            if(blockedSnap.exists() && blockedSnap.val()) {
+                alert("You have blocked this contact. Unblock to call.");
+                return;
+            }
+
+            setIsInCall(true);
+            setCallStatus('Calling...');
+            try {
+              const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: video });
+              localStreamRef.current = stream;
+              if(localVideoRef.current) localVideoRef.current.srcObject = stream;
+              if(!video && localVideoRef.current) localVideoRef.current.style.opacity = '0';
+            } catch(e) { 
+                console.warn("Media access failed:", e.message);
+                let msg = "Permission denied. Please allow microphone/camera access.";
+                alert(msg); 
+                setIsInCall(false); 
+                return; 
+            }
+
+            const pc = new RTCPeerConnection(rtcConfig);
+            peerConnectionRef.current = pc;
+            iceCandidatesQueue.current = [];
+
+            localStreamRef.current.getTracks().forEach(t => pc.addTrack(t, localStreamRef.current));
+            
+            pc.ontrack = (event) => { 
+                if(remoteVideoRef.current) remoteVideoRef.current.srcObject = event.streams[0]; 
+            };
+            
+            pc.onicecandidate = (event) => { 
+                if(event.candidate) {
+                    push(ref(db, `calls/${targetUid}/callerCandidates`), event.candidate.toJSON()); 
+                }
+            };
+
+            const offer = await pc.createOffer();
+            await pc.setLocalDescription(offer);
+            
+            set(ref(db, `calls/${targetUid}`), {
+               callerId: myUid, 
+               callerName: userProfile?.name, 
+               type: 'offer', 
+               sdp: offer.sdp, 
+               callType: video ? 'video' : 'voice', 
+               callRoomId: myUid
+            });
+
+            onValue(ref(db, `calls/${targetUid}/answer`), async (snap) => {
+                const data = snap.val();
+                if(data && pc.signalingState === 'have-local-offer') {
+                    await pc.setRemoteDescription(new RTCSessionDescription(data));
+                    setCallStatus('Connected');
+                    iceCandidatesQueue.current.forEach(c => pc.addIceCandidate(new RTCIceCandidate(c)));
+                    iceCandidatesQueue.current = [];
+                }
+            });
+
+            onValue(ref(db, `calls/${targetUid}/candidates`), snap => { 
+                snap.forEach(c => { 
+                    const candidateVal = c.val();
+                    if (pc.remoteDescription && pc.remoteDescription.type) {
+                        pc.addIceCandidate(new RTCIceCandidate(candidateVal));
+                    } else {
+                        iceCandidatesQueue.current.push(candidateVal);
+                    }
+                }); 
+            });
+          }
+
+          async function handleIncomingCall(data) {
+             const isVideo = data.callType === 'video';
+             currentCallType.current = isVideo ? 'video' : 'voice';
+             
+             if(toneOscillatorRef.current) { 
+               try {
+                 toneOscillatorRef.current.stop(); 
+                 toneOscillatorRef.current.dispose(); 
+               } catch(e) {}
+               toneOscillatorRef.current = null; 
+             }
+             
+             setIncomingCall(null);
+             setIsInCall(true);
+             setCallStatus('Connecting...');
+             iceCandidatesQueue.current = [];
+             
+             try {
+               if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+                  throw new Error("MediaDevices not supported");
+               }
+               const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: isVideo });
+               localStreamRef.current = stream;
+               if(localVideoRef.current) localVideoRef.current.srcObject = stream;
+               if(!isVideo && localVideoRef.current) localVideoRef.current.style.opacity = '0';
+             } catch(e) { 
+                console.warn("Incoming Call Media Error:", e.message);
+                alert("Could not access Camera/Mic. Please check permissions and ensure secure context.");
+                setIsInCall(false);
+                setIncomingCall(null);
+                return; 
+             }
+
+             const pc = new RTCPeerConnection(rtcConfig);
+             peerConnectionRef.current = pc;
+             localStreamRef.current.getTracks().forEach(t => pc.addTrack(t, localStreamRef.current));
+             
+             pc.ontrack = event => { if(remoteVideoRef.current) remoteVideoRef.current.srcObject = event.streams[0]; };
+             
+             // Fixed: Send candidates to the path the caller is listening to (calls/{currentUser.uid}/candidates)
+             pc.onicecandidate = event => { 
+                 if(event.candidate) push(ref(db, `calls/${currentUser.uid}/candidates`), event.candidate.toJSON()); 
+             };
+
+             await pc.setRemoteDescription(new RTCSessionDescription({ type: 'offer', sdp: data.sdp }));
+             
+             iceCandidatesQueue.current.forEach(c => pc.addIceCandidate(new RTCIceCandidate(c)));
+             iceCandidatesQueue.current = [];
+
+             const answer = await pc.createAnswer();
+             await pc.setLocalDescription(answer);
+             
+             update(ref(db, `calls/${currentUser.uid}`), { answer: { type: 'answer', sdp: answer.sdp } });
+             
+             onValue(ref(db, `calls/${currentUser.uid}/callerCandidates`), snap => { 
+                 snap.forEach(c => { 
+                     const candidateVal = c.val();
+                     if (pc.remoteDescription && pc.remoteDescription.type) {
+                         pc.addIceCandidate(new RTCIceCandidate(candidateVal));
+                     } else {
+                         iceCandidatesQueue.current.push(candidateVal);
+                     }
+                 }); 
+             });
+             
+             setCallStatus('Connected');
+          }
+
+          function endCall() {
+            if(peerConnectionRef.current) {
+                peerConnectionRef.current.close();
+                peerConnectionRef.current = null;
+            }
+            if(localStreamRef.current) {
+                localStreamRef.current.getTracks().forEach(t => t.stop());
+                localStreamRef.current = null;
+            }
+            if(toneOscillatorRef.current) {
+                try {
+                    toneOscillatorRef.current.stop();
+                    toneOscillatorRef.current.dispose();
+                } catch(e) {}
+                toneOscillatorRef.current = null;
+            }
+            
+            setIsInCall(false);
+            setIncomingCall(null);
+            setCallStatus('');
+            iceCandidatesQueue.current = [];
+            
+            set(ref(db, `calls/${currentUser.uid}`), null);
+            if(currentChatUser) set(ref(db, `calls/${currentChatUser.uid}`), null);
+            
+            // Correctly push video or voice type to history
+            push(ref(db, `callLogs/${currentUser.uid}`), { type: currentCallType.current, duration: '0:00', timestamp: serverTimestamp() });
+          }
+        }
+
+        const AuthView = ({ onLogin }) => {
+          const [isLogin, setIsLogin] = useState(true);
+          const [email, setEmail] = useState('');
+          const [pass, setPass] = useState('');
+          const [isLoading, setIsLoading] = useState(false);
+          const [error, setError] = useState('');
+
+          const handleAuth = async (e) => {
+            if(e) e.preventDefault();
+            if(!email || !pass) {
+                setError("Please enter both email and password.");
+                return;
+            }
+            setError('');
+            setIsLoading(true);
+            try {
+              if(isLogin) await signInWithEmailAndPassword(auth, email, pass);
+              else await createUserWithEmailAndPassword(auth, email, pass);
+            } catch(err) { 
+                setIsLoading(false);
+                setError(err.message);
+            }
+          };
+
+          const handleGoogleSignIn = async () => {
+            setError('');
+            setIsLoading(true);
+            try {
+              const provider = new GoogleAuthProvider();
+              await signInWithPopup(auth, provider);
+            } catch(err) {
+              setIsLoading(false);
+              setError(err.message);
+            }
+          };
+
+          return (
+            <div className="flex flex-col items-center justify-center h-screen bg-background p-6 text-center">
+              <h1 className="text-3xl font-bold text-accent mb-8">Hi Chats</h1>
+              {isLoading ? (
+                  <div className="flex flex-col items-center justify-center w-full max-w-xs py-10">
+                      <div className="w-14 h-14 border-4 border-accent border-t-transparent rounded-full animate-spin mb-4 shadow-lg"></div>
+                      <p className="text-secondary text-sm animate-pulse">{isLogin ? "Verifying credentials..." : "Authenticating..."}</p>
+                  </div>
+              ) : (
+                <div className="w-full max-w-xs">
+                  <form onSubmit={handleAuth} className="w-full">
+                    {error && <div className="bg-red-500/10 border border-red-500 text-red-500 p-3 rounded-lg mb-4 text-sm">{error}</div>}
+                    <input className="w-full bg-inputPill border border-gray-700 text-primary p-3 rounded-lg mb-4 outline-none placeholder-secondary" placeholder="Email" type="email" value={email} onChange={e => setEmail(e.target.value)} />
+                    <input className="w-full bg-inputPill border border-gray-700 text-primary p-3 rounded-lg mb-6 outline-none placeholder-secondary" placeholder="Password" type="password" value={pass} onChange={e => setPass(e.target.value)} />
+                    <GradientButton fullWidth type="submit">{isLogin ? 'Login' : 'Sign Up'}</GradientButton>
+                    <p className="mt-4 text-secondary text-sm cursor-pointer hover:text-accent transition-colors" onClick={() => { setIsLogin(!isLogin); setError(''); }}>{isLogin ? "No account? Sign Up" : "Have an account? Login"}</p>
+                  </form>
+                  
+                  <div className="flex items-center my-6 w-full">
+                    <div className="flex-grow border-t border-gray-700"></div>
+                    <span className="px-3 text-secondary text-sm">or</span>
+                    <div className="flex-grow border-t border-gray-700"></div>
+                  </div>
+                  
+                  <button 
+                    type="button" 
+                    onClick={handleGoogleSignIn}
+                    className="w-full flex items-center justify-center gap-3 bg-white text-black p-3 rounded-lg font-semibold hover:bg-gray-200 transition-colors shadow-md"
+                  >
+                    <svg viewBox="0 0 24 24" width="20" height="20" xmlns="http://www.w3.org/2000/svg">
+                      <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" fill="#4285F4"/>
+                      <path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/>
+                      <path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" fill="#FBBC05"/>
+                      <path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335"/>
+                    </svg>
+                    Sign in with Google
+                  </button>
+                </div>
+              )}
+            </div>
+          );
+        };
+
+        const ProfileSetupView = ({ user, onComplete }) => {
+          const [name, setName] = useState('');
+          const [bio, setBio] = useState('');
+          const [dpUrl, setDpUrl] = useState('');
+          const fileInputRef = useRef(null);
+          const [processing, setProcessing] = useState(false);
+
+          const handleFileSelect = (e) => {
+            const file = e.target.files?.[0];
+            if (file) {
+              setProcessing(true);
+              const reader = new FileReader();
+              reader.onload = (event) => {
+                const img = new Image();
+                img.onload = () => {
+                    const canvas = document.createElement('canvas');
+                    // Resize to manageable size for RTDB (e.g. 300x300)
+                    const MAX_SIZE = 300; 
+                    let width = img.width;
+                    let height = img.height;
+
+                    if (width > height) {
+                        if (width > MAX_SIZE) {
+                            height *= MAX_SIZE / width;
+                            width = MAX_SIZE;
+                        }
+                    } else {
+                        if (height > MAX_SIZE) {
+                            width *= MAX_SIZE / height;
+                            height = MAX_SIZE;
+                        }
+                    }
+
+                    canvas.width = width;
+                    canvas.height = height;
+                    const ctx = canvas.getContext("2d");
+                    ctx.drawImage(img, 0, 0, width, height);
+                    
+                    // Compress to JPEG 0.7 quality
+                    const dataUrl = canvas.toDataURL("image/jpeg", 0.7);
+                    setDpUrl(dataUrl);
+                    setProcessing(false);
+                };
+                img.src = event.target.result;
+              };
+              reader.readAsDataURL(file);
+            }
+          };
+
+          const saveProfile = () => {
+             if(!name) return alert("Name is required");
+             if(processing) return alert("Please wait for image processing...");
+             
+             const userId = generateUniqueId();
+             
+             // Default DP logic if none selected (Grey silhouette)
+             let finalDpUrl = dpUrl;
+             if (!finalDpUrl) {
+                finalDpUrl = DEFAULT_AVATAR;
+             }
+
+             const profileData = { 
+                 name, 
+                 bio, 
+                 userId, 
+                 dpUrl: finalDpUrl, 
+                 uid: user.uid 
+             };
+
+             set(ref(db, 'users/' + user.uid), profileData);
+             set(ref(db, 'publicUsers/' + userId), { uid: user.uid });
+             onComplete(profileData);
+          };
+
+          return (
+            <div className="flex flex-col items-center justify-center h-screen bg-background p-6">
+               <h2 className="text-2xl text-accent font-semibold mb-8">Profile Info</h2>
+               
+               <div className="relative mb-8 cursor-pointer group" onClick={() => fileInputRef.current?.click()}>
+                  <div className="w-32 h-32 rounded-full overflow-hidden bg-container flex items-center justify-center border-2 border-transparent group-hover:border-accent transition-colors">
+                     {processing ? (
+                        <div className="animate-spin rounded-full h-8 w-8 border-t-2 border-b-2 border-accent"></div>
+                     ) : dpUrl ? (
+                        <img src={dpUrl} className="w-full h-full object-cover" />
+                     ) : (
+                        <svg viewBox="0 0 24 24" fill="#8696a0" className="w-24 h-24">
+                           <path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z" />
+                        </svg>
+                     )}
+                  </div>
+                  <div className="absolute bottom-1 right-1 bg-accent p-2 rounded-full shadow-lg border-2 border-background flex items-center justify-center">
+                     <svg viewBox="0 0 24 24" width="20" height="20" fill="white"><path d="M9 2L7.17 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2h-3.17L15 2H9zm6 15c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5z"/></svg>
+                  </div>
+               </div>
+               
+               <input type="file" ref={fileInputRef} className="hidden" accept="image/*" onChange={handleFileSelect} />
+
+               <input className="w-full bg-inputPill border border-gray-700 text-primary p-4 rounded-xl mb-4 placeholder-secondary outline-none focus:border-accent transition-all" placeholder="Type your name" value={name} onChange={e => setName(e.target.value)}/>
+               <input className="w-full bg-inputPill border border-gray-700 text-primary p-4 rounded-xl mb-8 placeholder-secondary outline-none focus:border-accent transition-all" placeholder="Bio (Optional)" value={bio} onChange={e => setBio(e.target.value)}/>
+               
+               <GradientButton fullWidth onClick={saveProfile}>Next</GradientButton>
+            </div>
+          );
+        };
+
+        const ChatScreen = ({ chatId, user, currentUser, myProfile, onClose, onCall }) => {
+          const [input, setInput] = useState('');
+          const [isTyping, setIsTyping] = useState(false);
+          const [isMenuOpen, setIsMenuOpen] = useState(false);
+          const [showEmojiPicker, setShowEmojiPicker] = useState(false);
+          const [emojiSearch, setEmojiSearch] = useState('');
+          const [isAttachMenuOpen, setIsAttachMenuOpen] = useState(false);
+          const bottomRef = useRef(null);
+
+          const [viewingImage, setViewingImage] = useState(null);
+          const [imageZoom, setImageZoom] = useState(1);
+
+          const [isMsgSearchOpen, setIsMsgSearchOpen] = useState(false);
+          const [msgSearchTerm, setMsgSearchTerm] = useState('');
+          const [msgSearchDate, setMsgSearchDate] = useState('');
+          const [highlightedMsgId, setHighlightedMsgId] = useState(null);
+          const [isCalendarOpen, setIsCalendarOpen] = useState(false);
+          
+          const docInputRef = useRef(null);
+          const galleryInputRef = useRef(null);
+          const cameraInputRef = useRef(null);
+
+          const [isRecording, setIsRecording] = useState(false);
+          const [recordingTime, setRecordingTime] = useState(0);
+          const mediaRecorderRef = useRef(null);
+          const audioChunksRef = useRef([]);
+          const timerRef = useRef(null);
+          const recordingStartRef = useRef(0); 
+
+          // --- Audio Player State ---
+          const [currentAudio, setCurrentAudio] = useState(null); // { id, audioObj }
+          const [playingAudioId, setPlayingAudioId] = useState(null); // Visual state
+          const [audioProgress, setAudioProgress] = useState(0);
+
+          // --- Selection & Clear Chat State ---
+          const [isSelectionMode, setIsSelectionMode] = useState(false);
+          const [selectedMsgIds, setSelectedMsgIds] = useState([]);
+          const [showClearModal, setShowClearModal] = useState(false);
+          const [clearMedia, setClearMedia] = useState(false);
+
+          // --- Block State ---
+          const [isBlocked, setIsBlocked] = useState(false);
+          const [showBlockModal, setShowBlockModal] = useState(false);
+          const [showUnblockModal, setShowUnblockModal] = useState(false);
+
+          // --- Message Sync Logic ---
+          const [rawMsgs, setRawMsgs] = useState([]);
+          const [clearedAt, setClearedAt] = useState(0);
+
+          // --- Calendar Range Constraint ---
+          const minDate = new Date();
+          minDate.setFullYear(minDate.getFullYear() - 1);
+          const maxDate = new Date();
+          maxDate.setFullYear(maxDate.getFullYear() + 1);
+
+          useEffect(() => {
+            return () => {
+              if (currentAudio && currentAudio.audioObj) {
+                currentAudio.audioObj.pause();
+                currentAudio.audioObj.onended = null;
+                currentAudio.audioObj.ontimeupdate = null;
+              }
+            };
+          }, [currentAudio]);
+
+          // Listener for ClearedAt timestamp
+          useEffect(() => {
+            const clearRef = ref(db, `userChats/${currentUser.uid}/${chatId}/clearedAt`);
+            const unsub = onValue(clearRef, (snap) => {
+              setClearedAt(snap.val() || 0);
+            });
+            return () => off(clearRef);
+          }, [chatId, currentUser.uid]);
+
+          // Listener for Block Status
+          useEffect(() => {
+             const blockRef = ref(db, `blocked/${currentUser.uid}/${user.uid}`);
+             const unsub = onValue(blockRef, (snap) => {
+                setIsBlocked(!!snap.val());
+             });
+             return () => off(blockRef);
+          }, [currentUser.uid, user.uid]);
+
+          // Listener for Messages (Realtime)
+          useEffect(() => {
+            // Reset unread count
+            set(ref(db, `unreadCounts/${currentUser.uid}/${chatId}`), 0);
+            
+            const msgRef = ref(db, `messages/${chatId}`);
+            const unsub = onValue(msgRef, (snapshot) => {
+               const data = [];
+               const updates = {};
+               
+               snapshot.forEach(c => {
+                  const val = c.val();
+                  data.push({ ...val, id: c.key });
+                  // Mark as read logic
+                  if (val.sender !== currentUser.uid && !val.read) {
+                      updates[`messages/${chatId}/${c.key}/read`] = true;
+                  }
+               });
+               
+               if(Object.keys(updates).length > 0) update(ref(db), updates);
+               setRawMsgs(data);
+            });
+            
+            // Only update typing status if NOT blocked
+            onValue(ref(db, `typing/${chatId}/${user.uid}`), snap => {
+                if(!isBlocked) setIsTyping(snap.val());
+                else setIsTyping(false);
+            });
+            
+            return () => off(msgRef);
+          }, [chatId, isBlocked]); // Dependency on isBlocked to refresh typing logic
+
+          // Derived state: Filter messages based on clearedAt timestamp
+          const msgs = rawMsgs.filter(m => m.timestamp > clearedAt);
+
+          // Scroll to bottom when new messages arrive (unless in selection mode)
+          useEffect(() => {
+             if (!isSelectionMode && msgs.length > 0) {
+                 setTimeout(() => bottomRef.current?.scrollIntoView({ behavior: 'smooth' }), 100);
+             }
+          }, [msgs.length, isSelectionMode]);
+
+          // Reset selection mode if chat closes
+          useEffect(() => {
+             if(!chatId) {
+                setIsSelectionMode(false);
+                setSelectedMsgIds([]);
+                setShowClearModal(false);
+                setShowBlockModal(false);
+                setShowUnblockModal(false);
+                setIsMsgSearchOpen(false);
+                setIsCalendarOpen(false);
+             }
+          }, [chatId]);
+
+          const handleBlockConfirm = () => {
+             set(ref(db, `blocked/${currentUser.uid}/${user.uid}`), true);
+             // Clear typing status so they don't see us typing
+             set(ref(db, `typing/${chatId}/${currentUser.uid}`), false);
+             setShowBlockModal(false);
+             setIsMenuOpen(false);
+          };
+
+          const handleUnblockConfirm = () => {
+             set(ref(db, `blocked/${currentUser.uid}/${user.uid}`), null);
+             setShowUnblockModal(false);
+             setIsMenuOpen(false);
+          };
+
+          const sendText = () => {
+             if(isBlocked) return; // Prevent sending if blocked
+             if(!input.trim()) return;
+             push(ref(db, `messages/${chatId}`), { 
+                 text: input.trim(), 
+                 sender: currentUser.uid, 
+                 timestamp: serverTimestamp(),
+                 read: false 
+             });
+             get(ref(db, `unreadCounts/${user.uid}/${chatId}`)).then(snap => set(ref(db, `unreadCounts/${user.uid}/${chatId}`), (snap.val() || 0) + 1));
+             setInput('');
+          };
+
+          const handleJumpToMessage = (msgId) => {
+             setIsMsgSearchOpen(false);
+             setHighlightedMsgId(msgId);
+             setTimeout(() => {
+                 const el = document.getElementById(`msg-${msgId}`);
+                 if(el) el.scrollIntoView({behavior: 'smooth', block: 'center'});
+             }, 300);
+             setTimeout(() => setHighlightedMsgId(null), 2500);
+          };
+
+          // --- Chunked File Upload Logic ---
+          const CHUNK_LIMIT = 500 * 1024; // 500KB chunks for safety
+          
+          const handleFileUpload = async (e, type) => {
+              if(isBlocked) return;
+              const file = e.target.files?.[0];
+              if (!file) return;
+
+              e.target.value = ''; // Reset input to allow re-selection
+
+              const reader = new FileReader();
+              reader.onload = async () => {
+                  const base64Data = reader.result;
+                  
+                  // Check if file is large (> 1MB), then chunk it
+                  if (base64Data.length > 1000000) {
+                      const fileId = `${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+                      const chunks = [];
+                      const totalLength = base64Data.length;
+                      
+                      // Split into chunks
+                      for (let i = 0; i < totalLength; i += CHUNK_LIMIT) {
+                          chunks.push(base64Data.substring(i, i + CHUNK_LIMIT));
+                      }
+
+                      // Upload chunks to fileChunks path
+                      try {
+                          await Promise.all(chunks.map((chunk, idx) => {
+                              return set(ref(db, `fileChunks/${fileId}/${idx}`), chunk);
+                          }));
+
+                          // Send message metadata
+                          const messageData = {
+                              sender: currentUser.uid,
+                              timestamp: serverTimestamp(),
+                              read: false,
+                              isChunked: true,
+                              fileId: fileId,
+                              chunkCount: chunks.length,
+                              fileType: type, // 'image' or 'video'
+                              fileName: file.name
+                          };
+                          push(ref(db, `messages/${chatId}`), messageData);
+                      } catch (err) {
+                          console.error("Upload failed", err);
+                          alert("Failed to upload file. Please try again.");
+                      }
+                  } else {
+                      // Standard upload for smaller files
+                      const messageData = {
+                          sender: currentUser.uid,
+                          timestamp: serverTimestamp(),
+                          read: false,
+                      };
+
+                      if (type === 'file') {
+                          messageData.fileUrl = base64Data;
+                          messageData.fileName = file.name;
+                      } else if (type === 'image') {
+                          messageData.imageUrl = base64Data;
+                      } else if (type === 'video') {
+                          messageData.videoUrl = base64Data;
+                      }
+
+                      push(ref(db, `messages/${chatId}`), messageData);
+                  }
+                  setIsAttachMenuOpen(false);
+              };
+              reader.readAsDataURL(file);
+          };
+
+          const startRecording = async () => {
+            if(isBlocked) return;
+            try {
+              if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+                  throw new Error("Secure context required (HTTPS/localhost)");
+              }
+              const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+              mediaRecorderRef.current = new MediaRecorder(stream);
+              audioChunksRef.current = [];
+              
+              mediaRecorderRef.current.ondataavailable = (event) => {
+                if(event.data.size > 0) audioChunksRef.current.push(event.data);
+              };
+              
+              mediaRecorderRef.current.onstop = async () => {
+                const mimeType = MediaRecorder.isTypeSupported("audio/webm") ? "audio/webm" : 
+                                 (MediaRecorder.isTypeSupported("audio/mp4") ? "audio/mp4" : "");
+                const options = mimeType ? { type: mimeType } : undefined;
+                const audioBlob = new Blob(audioChunksRef.current, options);
+                
+                const reader = new FileReader();
+                reader.readAsDataURL(audioBlob);
+                reader.onloadend = () => {
+                     const base64Audio = reader.result;
+                     const durationMs = Date.now() - recordingStartRef.current;
+                     const totalSeconds = Math.max(1, Math.round(durationMs / 1000));
+                     const mins = Math.floor(totalSeconds / 60);
+                     const secs = totalSeconds % 60;
+                     const durStr = `${mins}:${secs.toString().padStart(2, '0')}`;
+                     
+                     push(ref(db, `messages/${chatId}`), {
+                        audioUrl: base64Audio,
+                        duration: durStr,
+                        sender: currentUser.uid,
+                        timestamp: serverTimestamp(),
+                        played: false,
+                        read: false
+                     });
+                     setRecordingTime(0);
+                };
+              };
+              recordingStartRef.current = Date.now();
+              mediaRecorderRef.current.start();
+              setIsRecording(true);
+              setRecordingTime(0);
+              timerRef.current = setInterval(() => {
+                  const elapsed = Math.floor((Date.now() - recordingStartRef.current) / 1000);
+                  setRecordingTime(elapsed);
+              }, 1000);
+            } catch(e) { 
+               console.error(e);
+               alert("Mic access denied.");
+            }
+          };
+
+          const stopRecording = () => {
+             if(mediaRecorderRef.current && isRecording) {
+                mediaRecorderRef.current.stop();
+                mediaRecorderRef.current.stream.getTracks().forEach(t => t.stop());
+                setIsRecording(false);
+                clearInterval(timerRef.current);
+             }
+          };
+
+          // --- Audio Player Logic ---
+          const handleAudioClick = (url, id) => {
+            if (isSelectionMode) return; 
+
+            if (currentAudio && currentAudio.id === id) {
+                if (currentAudio.audioObj.paused) {
+                    currentAudio.audioObj.play();
+                    setPlayingAudioId(id); 
+                } else {
+                    currentAudio.audioObj.pause();
+                    setPlayingAudioId(null); 
+                }
+                return;
+            }
+            if (currentAudio && currentAudio.audioObj) {
+                currentAudio.audioObj.pause();
+                currentAudio.audioObj.onended = null;
+                currentAudio.audioObj.ontimeupdate = null;
+            }
+            const newAudio = new Audio(url);
+            newAudio.currentTime = 0;
+            newAudio.ontimeupdate = () => {
+                if(newAudio.duration) {
+                    setAudioProgress((newAudio.currentTime / newAudio.duration) * 100);
+                }
+            };
+            newAudio.onended = () => {
+                setPlayingAudioId(null);
+                setAudioProgress(0);
+            };
+            newAudio.play().catch(e => console.log("Playback failed", e));
+            setCurrentAudio({ id, audioObj: newAudio });
+            setPlayingAudioId(id);
+            update(ref(db, `messages/${chatId}/${id}`), { played: true });
+          };
+
+          const handleSeek = (e, id) => {
+            if (isSelectionMode) return;
+            const val = parseFloat(e.target.value);
+            setAudioProgress(val);
+            if (currentAudio && currentAudio.id === id && currentAudio.audioObj.duration) {
+                 const newTime = (val / 100) * currentAudio.audioObj.duration;
+                 currentAudio.audioObj.currentTime = newTime;
+            }
+          };
+
+          // --- Selection Logic ---
+          const toggleSelection = (msgId) => {
+             if(selectedMsgIds.includes(msgId)) {
+                setSelectedMsgIds(prev => prev.filter(id => id !== msgId));
+             } else {
+                setSelectedMsgIds(prev => [...prev, msgId]);
+             }
+          };
+
+          const handleDeleteSelected = () => {
+             if(selectedMsgIds.length === 0) return;
+             selectedMsgIds.forEach(id => {
+                 set(ref(db, `messages/${chatId}/${id}`), null);
+             });
+             setSelectedMsgIds([]);
+             setIsSelectionMode(false);
+          };
+
+          const handleStarSelected = () => {
+             if(selectedMsgIds.length === 0) return;
+             const firstMsg = msgs.find(m => m.id === selectedMsgIds[0]);
+             const newState = !firstMsg?.starred;
+             
+             const updates = {};
+             selectedMsgIds.forEach(id => {
+                 updates[`messages/${chatId}/${id}/starred`] = newState;
+             });
+             update(ref(db), updates);
+             setSelectedMsgIds([]);
+             setIsSelectionMode(false);
+          };
+
+          const handleCopySelected = () => {
+             if(selectedMsgIds.length === 0) return;
+             const textToCopy = selectedMsgIds.map(id => {
+                const m = msgs.find(msg => msg.id === id);
+                return m?.text || "";
+             }).filter(t => t).join("\n");
+             
+             if(textToCopy) {
+                navigator.clipboard.writeText(textToCopy);
+             }
+             setSelectedMsgIds([]);
+             setIsSelectionMode(false);
+          };
+          
+          const handleClearChatConfirm = () => {
+              if (clearMedia) {
+                  set(ref(db, `messages/${chatId}`), null);
+              } else {
+                  set(ref(db, `userChats/${currentUser.uid}/${chatId}/clearedAt`), serverTimestamp());
+              }
+              setShowClearModal(false);
+              setIsMenuOpen(false);
+          };
+
+          const renderAudioBubble = (m) => {
+              const isMe = m.sender === currentUser.uid;
+              const dp = isMe ? myProfile.dpUrl : user.dpUrl;
+              const isPlaying = playingAudioId === m.id;
+              const playedColor = m.played ? 'text-blue-500' : 'text-green-500';
+              const isCurrent = currentAudio && currentAudio.id === m.id;
+              const progress = isCurrent ? audioProgress : 0;
+              
+              return (
+                <div className={`flex items-center gap-3 min-w-[240px] ${isMe ? 'flex-row-reverse' : 'flex-row'}`}>
+                   <div className="relative">
+                     <img src={dp} className="w-12 h-12 rounded-full bg-gray-900 object-cover" />
+                     <div className={`absolute bottom-0 right-0 ${playedColor} bg-container rounded-full p-0.5`}>
+                       <MicIcon /> 
+                     </div>
+                   </div>
+                   
+                   <button onClick={() => m.audioUrl && m.id && handleAudioClick(m.audioUrl, m.id)} className="z-10 text-secondary hover:text-primary transition-colors">
+                      {isPlaying ? <PauseIcon /> : <PlayIcon />}
+                   </button>
+
+                   <div className="flex flex-col flex-1 gap-1">
+                      <input 
+                         type="range" 
+                         min="0" 
+                         max="100" 
+                         value={progress} 
+                         onChange={(e) => handleSeek(e, m.id)}
+                         disabled={isSelectionMode}
+                         className="w-full h-1 bg-gray-500 rounded-lg appearance-none cursor-pointer accent-[#00a884]"
+                      />
+                      <span className="text-xs text-secondary ml-1">{m.duration || "0:00"}</span>
+                   </div>
+                </div>
+              );
+          };
+          
+          const renderMessageContent = (m) => {
+              if (m.audioUrl) return renderAudioBubble(m);
+              // Chunked or Standard Image/Video Handling via AsyncMedia
+              if (m.isChunked || m.imageUrl || m.videoUrl) {
+                  return (
+                      <AsyncMedia 
+                          message={m} 
+                          isSelectionMode={isSelectionMode} 
+                          onViewImage={(url) => {
+                              setViewingImage(url); 
+                              setImageZoom(1);
+                          }} 
+                      />
+                  );
+              }
+              if (m.fileUrl) return (
+                  <div className="flex items-center gap-3 p-2 bg-black/20 rounded-lg">
+                     <div className="text-purple-400"><DocumentIcon /></div>
+                     <span className="text-sm truncate max-w-[150px]">{m.fileName || "Document"}</span>
+                     {!isSelectionMode && (
+                        <a href={m.fileUrl} download={m.fileName || "file"} className="p-2 hover:bg-white/10 rounded-full">
+                            <DownloadIcon />
+                        </a>
+                     )}
+                  </div>
+              );
+              return m.text;
+          }
+
+          // Header Logic
+          const renderHeader = () => {
+             if (isSelectionMode) {
+                const count = selectedMsgIds.length;
+                return (
+                   <div className="flex items-center justify-between p-2 bg-container shadow-sm z-30 text-primary w-full h-[60px]">
+                      <div className="flex items-center gap-4">
+                         <button onClick={() => { setIsSelectionMode(false); setSelectedMsgIds([]); }} className="p-2 text-secondary hover:text-primary">✕</button>
+                         <span className="font-bold text-lg">{count} selected</span>
+                      </div>
+                      <div className="flex items-center gap-4 mr-2">
+                         <button onClick={handleDeleteSelected} disabled={count === 0} className={`p-2 rounded-full ${GRADIENT_CLASS} shadow-lg active:scale-95 transition-transform`}><TrashIcon className="w-5 h-5 text-white" /></button>
+                         <button onClick={handleStarSelected} disabled={count === 0} className={`p-2 rounded-full ${GRADIENT_CLASS} shadow-lg active:scale-95 transition-transform`}><StarIcon className="w-5 h-5 text-white" /></button>
+                         <button onClick={handleCopySelected} disabled={count === 0} className={`p-2 rounded-full ${GRADIENT_CLASS} shadow-lg active:scale-95 transition-transform`}><CopyIcon className="w-5 h-5 text-white" /></button>
+                      </div>
+                   </div>
+                );
+             }
+             return (
+               <div className="flex items-center p-2 bg-container shadow-sm z-30 text-primary w-full h-[60px]">
+                  <button onClick={onClose} className="text-xl mr-2 text-primary p-2">←</button>
+                  <img src={user.dpUrl} className="w-9 h-9 rounded-full mr-3 bg-gray-700 object-cover" />
+                  <div className="flex-1 cursor-pointer">
+                     <div className="font-semibold text-base">{user.name}</div>
+                     <div className="text-xs text-secondary">{isTyping ? 'typing...' : user.status}</div>
+                  </div>
+                  <div className="flex items-center gap-4 mr-2">
+                     {/* Disable calls if blocked */}
+                     <button onClick={() => !isBlocked && onCall(true)} className={`p-1 ${isBlocked ? 'opacity-30 cursor-not-allowed' : ''}`}><VideoIcon /></button>
+                     <button onClick={() => !isBlocked && onCall(false)} className={`p-1 ${isBlocked ? 'opacity-30 cursor-not-allowed' : ''}`}><PhoneIcon /></button>
+                     <button onClick={() => setIsMsgSearchOpen(true)} className="p-1"><SearchIcon /></button>
+                     <div className="relative">
+                        <button onClick={() => setIsMenuOpen(!isMenuOpen)} className="p-1"><MenuIcon /></button>
+                        {isMenuOpen && (
+                          <div className="absolute right-0 top-10 w-48 bg-container shadow-xl rounded-md py-2 text-primary z-50 border border-gray-700 animate-scaleIn">
+                            <div className="px-4 py-2 hover:bg-background cursor-pointer text-sm" onClick={() => { setIsSelectionMode(true); setIsMenuOpen(false); }}>Select messages</div>
+                            <div className="px-4 py-2 hover:bg-background cursor-pointer text-sm" onClick={() => { setShowClearModal(true); setIsMenuOpen(false); }}>Clear chat</div>
+                            {/* Toggle Block/Unblock based on state */}
+                            {isBlocked ? (
+                                <div className="px-4 py-2 hover:bg-background cursor-pointer text-sm" onClick={() => { setShowUnblockModal(true); setIsMenuOpen(false); }}>Unblock</div>
+                            ) : (
+                                <div className="px-4 py-2 hover:bg-background cursor-pointer text-sm" onClick={() => { setShowBlockModal(true); setIsMenuOpen(false); }}>Block</div>
+                            )}
+                          </div>
+                        )}
+                     </div>
+                  </div>
+               </div>
+             );
+          };
+
+          return (
+            <div className="absolute inset-0 bg-background z-40 flex flex-col bg-[url('https://user-images.githubusercontent.com/15075759/28719144-86dc0f70-73b1-11e7-911d-60d70fcded21.png')] bg-repeat bg-contain">
+               <div className="absolute inset-0 bg-background/90 z-0 pointer-events-none"></div>
+
+               {/* HEADER */}
+               {renderHeader()}
+
+               {/* Custom Calendar Modal */}
+               <CustomCalendar 
+                  isOpen={isCalendarOpen} 
+                  onClose={() => setIsCalendarOpen(false)}
+                  onSelect={(dateStr) => setMsgSearchDate(dateStr)}
+                  minDate={minDate}
+                  maxDate={maxDate}
+               />
+
+               {/* Search Messages Modal */}
+               {isMsgSearchOpen && (
+                 <div className="absolute inset-0 z-50 bg-[#111b21] flex flex-col animate-scaleIn">
+                   <div className="flex items-center gap-2 p-2 border-b border-gray-700 bg-container">
+                      <button onClick={() => { setIsMsgSearchOpen(false); setMsgSearchTerm(''); setMsgSearchDate(''); }} className="p-2 text-secondary hover:text-primary">
+                        <span className="text-xl">←</span>
+                      </button>
+                      <div className="flex-1 bg-inputPill rounded-lg flex items-center px-3 py-1.5">
+                         <SearchIcon />
+                         <input 
+                           autoFocus
+                           className="flex-1 bg-transparent border-none outline-none text-primary ml-2 text-sm placeholder-secondary"
+                           placeholder="Search..."
+                           value={msgSearchTerm}
+                           onChange={e => setMsgSearchTerm(e.target.value)}
+                         />
+                      </div>
+                      <div className="relative">
+                         <button className={`p-2 ${msgSearchDate ? 'text-accent' : 'text-secondary'}`} onClick={() => setIsCalendarOpen(true)}>
+                            <CalendarIcon />
+                         </button>
+                      </div>
+                   </div>
+                   
+                   <div className="flex-1 overflow-y-auto">
+                      {msgSearchDate && <div className="p-4 bg-black/20 text-secondary text-sm text-center">Messages from {msgSearchDate}</div>}
+                      {msgs.slice().reverse().filter(m => {
+                         const d = new Date(m.timestamp);
+                         if(msgSearchDate) {
+                            const yyyy = d.getFullYear();
+                            const mm = String(d.getMonth() + 1).padStart(2, '0');
+                            const dd = String(d.getDate()).padStart(2, '0');
+                            if(`${yyyy}-${mm}-${dd}` !== msgSearchDate) return false;
+                         }
+                         if(!msgSearchTerm) return true;
+                         const term = msgSearchTerm.toLowerCase();
+                         const textMatch = m.text && m.text.toLowerCase().includes(term);
+                         const timeStr = d.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit', hour12: true}).toLowerCase();
+                         const timeStr24 = d.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit', hour12: false});
+                         
+                         return textMatch || timeStr.includes(term) || timeStr24.includes(term);
+                      }).map(m => {
+                         const isMe = m.sender === currentUser.uid;
+                         const d = new Date(m.timestamp);
+                         return (
+                            <div key={m.id} onClick={() => handleJumpToMessage(m.id)} className="p-4 border-b border-gray-800 cursor-pointer hover:bg-white/5 flex flex-col gap-1">
+                                <div className="flex justify-between items-center text-xs text-secondary">
+                                   <span>{d.toLocaleDateString()} {d.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</span>
+                                   <span className={isMe ? "text-accent" : "text-blue-400"}>{isMe ? "You" : user.name}</span>
+                                </div>
+                                <div className="text-sm text-primary line-clamp-2">
+                                   {m.text || (m.audioUrl ? "🎤 Voice Message" : m.imageUrl ? "📷 Photo" : m.videoUrl ? "🎥 Video" : "📁 File")}
+                                </div>
+                            </div>
+                         )
+                      })}
+                      {msgs.length > 0 && msgs.filter(m => m.text?.toLowerCase().includes(msgSearchTerm.toLowerCase())).length === 0 && msgSearchTerm && (
+                          <div className="p-10 text-center text-secondary">No messages found.</div>
+                      )}
+                   </div>
+                 </div>
+               )}
+               
+               {/* Messages List */}
+               <div className="flex-1 overflow-y-auto p-4 z-10 flex flex-col gap-1">
+                  {msgs.map((m, i) => {
+                     const isMe = m.sender === currentUser.uid;
+                     const date = new Date(m.timestamp);
+                     const timeStr = date.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit', hour12: true});
+                     const isRead = m.read || false; 
+                     const isSelected = selectedMsgIds.includes(m.id);
+                     
+                     const prev = msgs[i-1];
+                     const showDate = !prev || (m.timestamp - prev.timestamp > 3600000); 
+
+                     return (
+                       <React.Fragment key={m.id || i}>
+                         {showDate && (
+                            <div className="flex justify-center my-3">
+                               <span className="bg-container text-secondary text-xs px-2 py-1 rounded shadow-sm">{date.toLocaleDateString()}</span>
+                            </div>
+                         )}
+                         <div 
+                           id={`msg-${m.id}`}
+                           onClick={() => isSelectionMode && toggleSelection(m.id)}
+                           className={`flex w-full transition-colors duration-200 ${isSelectionMode ? 'cursor-pointer hover:bg-white/5' : ''} ${isSelected ? 'bg-[#00a884]/20 -mx-4 px-4 py-1' : 'py-0.5'}`}
+                         >
+                            {/* Checkbox for Selection Mode */}
+                            {isSelectionMode && (
+                               <div className="flex items-center justify-center mr-3 pointer-events-none">
+                                  <input 
+                                     type="checkbox" 
+                                     className="custom-checkbox" 
+                                     checked={isSelected}
+                                     readOnly
+                                  />
+                               </div>
+                            )}
+
+                            <div className={`flex flex-1 ${isMe ? 'justify-end' : 'justify-start'} ${highlightedMsgId === m.id ? 'bg-[#00a884]/30 rounded-lg p-1' : ''}`}>
+                                <div className={`max-w-[80%] rounded-lg shadow-sm ${isMe ? 'bg-bubbleMe rounded-tr-none' : 'bg-bubbleOther rounded-tl-none'} ${isSelected ? 'opacity-80' : ''}`}>
+                                    <div className="px-2 pt-2 pb-1 text-sm text-primary flex flex-col">
+                                      <span className="break-words leading-relaxed">{renderMessageContent(m)}</span>
+                                      <div className="self-end text-[10px] text-gray-400 flex items-center gap-1 ml-2 select-none mt-1">
+                                        {m.starred && <StarFilledIcon className="text-[#FFD700] drop-shadow-md" />}
+                                        {timeStr}
+                                        {isMe && <span className={`${isRead ? 'text-blue-400' : 'text-gray-400'}`}>✓✓</span>}
+                                      </div>
+                                    </div>
+                                </div>
+                            </div>
+                         </div>
+                       </React.Fragment>
+                     );
+                  })}
+                  <div ref={bottomRef} />
+               </div>
+
+               {/* Clear Chat Modal */}
+               {showClearModal && (
+                 <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-scaleIn">
+                    <div className="bg-container rounded-xl p-6 w-full max-w-sm border border-gray-700 shadow-2xl">
+                       <h3 className="text-xl font-semibold mb-4 text-primary">Clear this chat?</h3>
+                       <p className="text-sm text-secondary mb-4">This chat will be empty but will remain in your chat list.</p>
+                       <div className="flex items-center gap-3 mb-8 cursor-pointer" onClick={() => setClearMedia(!clearMedia)}>
+                          <input type="checkbox" className="custom-checkbox" checked={clearMedia} readOnly />
+                          <span className="text-sm text-primary">Also delete media received in this chat from the device gallery</span>
+                       </div>
+                       <div className="flex justify-end gap-4">
+                          <button onClick={() => setShowClearModal(false)} className="px-4 py-2 text-[#00a884] font-medium border border-[#00a884] rounded-lg hover:bg-[#00a884]/10 transition-colors">Cancel</button>
+                          <button onClick={handleClearChatConfirm} className={`${GRADIENT_CLASS} px-4 py-2 rounded-lg text-white font-medium`}>Clear chat</button>
+                       </div>
+                    </div>
+                 </div>
+               )}
+
+               {/* Block User Modal */}
+               {showBlockModal && (
+                 <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-scaleIn">
+                    <div className="bg-container rounded-xl p-6 w-full max-w-sm border border-gray-700 shadow-2xl">
+                       <div className="flex items-center gap-2 mb-4 text-primary">
+                          <BlockIcon className="w-6 h-6 text-red-500" />
+                          <h3 className="text-xl font-semibold">Block {user.name}?</h3>
+                       </div>
+                       <p className="text-sm text-secondary mb-6">{user.name} will not be able to send you messages or call you. This contact will not be notified.</p>
+                       <div className="flex justify-end gap-4">
+                          <button onClick={() => setShowBlockModal(false)} className="px-4 py-2 text-[#00a884] font-medium border border-[#00a884] rounded-lg hover:bg-[#00a884]/10 transition-colors">Cancel</button>
+                          <button onClick={handleBlockConfirm} className="px-4 py-2 rounded-lg text-white font-medium bg-red-500 hover:bg-red-600 transition-colors shadow-lg">Block</button>
+                       </div>
+                    </div>
+                 </div>
+               )}
+
+               {/* Unblock User Modal */}
+               {showUnblockModal && (
+                 <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-scaleIn">
+                    <div className="bg-container rounded-xl p-6 w-full max-w-sm border border-gray-700 shadow-2xl">
+                       <h3 className="text-xl font-semibold mb-6 text-primary">Unblock {user.name}?</h3>
+                       <div className="flex justify-end gap-4">
+                          <button onClick={() => setShowUnblockModal(false)} className="px-4 py-2 text-[#00a884] font-medium border border-[#00a884] rounded-lg hover:bg-[#00a884]/10 transition-colors">Cancel</button>
+                          <button onClick={handleUnblockConfirm} className={`${GRADIENT_CLASS} px-4 py-2 rounded-lg text-white font-medium`}>Unblock</button>
+                       </div>
+                    </div>
+                 </div>
+               )}
+
+               {/* Standard Footer - Hidden in Selection Mode */}
+               {!isSelectionMode && (
+                 <>
+                   {/* Hide Footer if Blocked */}
+                   {isBlocked ? (
+                       <div className="p-4 bg-container z-10 text-center text-sm text-secondary border-t border-gray-800">
+                           You blocked this contact. Tap to unblock.
+                       </div>
+                   ) : (
+                     <>
+                       {showEmojiPicker && (
+                         <div className="absolute bottom-16 left-2 right-2 bg-[#202c33] border border-gray-700 rounded-xl shadow-2xl h-72 flex flex-col z-50 animate-scaleIn overflow-hidden">
+                            <div className="p-2 bg-[#202c33] border-b border-gray-700">
+                               <div className="bg-[#2a3942] rounded-lg flex items-center px-3 py-1">
+                                  <span className="text-secondary mr-2"><SearchIcon /></span>
+                                  <input 
+                                    className="bg-transparent border-none outline-none text-primary w-full text-sm placeholder-secondary h-8"
+                                    placeholder="Search emoji"
+                                    value={emojiSearch}
+                                    onChange={e => setEmojiSearch(e.target.value)}
+                                    autoFocus
+                                  />
+                               </div>
+                            </div>
+                            <div className="flex-1 overflow-y-auto p-2 grid grid-cols-8 gap-2 content-start">
+                               {EMOJI_LIST.filter(e => e.tags.includes(emojiSearch.toLowerCase()) || e.char.includes(emojiSearch)).map(e => (
+                                  <button 
+                                    key={e.char} 
+                                    className="text-2xl w-8 h-8 flex items-center justify-center hover:bg-[#2a3942] rounded transition-colors"
+                                    onClick={() => setInput(prev => prev + e.char)}
+                                  >
+                                    {e.char}
+                                  </button>
+                               ))}
+                            </div>
+                         </div>
+                       )}
+                       
+                       {isAttachMenuOpen && (
+                           <div className="absolute bottom-16 left-4 bg-container rounded-xl p-4 shadow-2xl flex flex-col gap-4 animate-scaleIn z-50 border border-gray-700">
+                               <div className="flex items-center gap-3 cursor-pointer hover:bg-white/5 p-2 rounded-lg" onClick={() => docInputRef.current?.click()}>
+                                   <div className="w-12 h-12 rounded-full bg-purple-100 flex items-center justify-center shadow-md">
+                                       <DocumentIcon />
+                                   </div>
+                                   <span className="font-medium">Document</span>
+                               </div>
+                               <div className="flex items-center gap-3 cursor-pointer hover:bg-white/5 p-2 rounded-lg" onClick={() => galleryInputRef.current?.click()}>
+                                   <div className="w-12 h-12 rounded-full bg-blue-100 flex items-center justify-center shadow-md">
+                                       <GalleryIcon />
+                                   </div>
+                                   <span className="font-medium">Photos & videos</span>
+                               </div>
+                               <div className="flex items-center gap-3 cursor-pointer hover:bg-white/5 p-2 rounded-lg" onClick={() => cameraInputRef.current?.click()}>
+                                   <div className="w-12 h-12 rounded-full bg-pink-100 flex items-center justify-center shadow-md">
+                                       <CameraAltIcon />
+                                   </div>
+                                   <span className="font-medium">Camera</span>
+                               </div>
+                           </div>
+                       )}
+
+                       <input 
+                          type="file" 
+                          ref={docInputRef} 
+                          className="hidden" 
+                          accept="*/*" 
+                          onChange={(e) => handleFileUpload(e, 'file')}
+                       />
+                       <input 
+                          type="file" 
+                          ref={galleryInputRef} 
+                          className="hidden" 
+                          accept="image/*,video/*" 
+                          onChange={(e) => {
+                              const file = e.target.files?.[0];
+                              if(file?.type.startsWith('video/')) handleFileUpload(e, 'video');
+                              else handleFileUpload(e, 'image');
+                          }}
+                       />
+                       <input 
+                          type="file" 
+                          ref={cameraInputRef} 
+                          className="hidden" 
+                          accept="image/*" 
+                          capture="user" 
+                          onChange={(e) => handleFileUpload(e, 'image')}
+                       />
+
+                       <div className="p-2 bg-container z-10 flex items-center gap-2">
+                          <div className="flex-1 bg-inputPill rounded-full flex items-center px-4 py-2">
+                             <span className="text-secondary mr-2 cursor-pointer hover:text-primary transition-colors" onClick={() => setShowEmojiPicker(!showEmojiPicker)}>☺</span>
+                             {isRecording ? (
+                                <div className="flex-1 text-red-500 font-medium animate-pulse">Recording... {Math.floor(recordingTime/60)}:{(recordingTime%60).toString().padStart(2,'0')}</div>
+                             ) : (
+                                <input 
+                                  value={input} 
+                                  onChange={e => {
+                                     setInput(e.target.value);
+                                     if (!isBlocked) {
+                                         set(ref(db, `typing/${chatId}/${currentUser.uid}`), true);
+                                         setTimeout(() => set(ref(db, `typing/${chatId}/${currentUser.uid}`), false), 3000);
+                                     }
+                                  }} 
+                                  placeholder="Type a message" 
+                                  className="flex-1 bg-transparent border-none outline-none text-primary text-sm placeholder-secondary"
+                                  onKeyDown={e => e.key === 'Enter' && sendText()}
+                                />
+                             )}
+                             <span className="text-secondary ml-2 cursor-pointer rotate-45" onClick={() => setIsAttachMenuOpen(!isAttachMenuOpen)}>📎</span>
+                          </div>
+                          
+                          <button 
+                             className="w-10 h-10 rounded-full bg-accent flex items-center justify-center text-white shadow-md active:scale-95 transition-transform"
+                             onClick={() => {
+                                if(input.trim()) {
+                                   sendText();
+                                } else {
+                                   if(isRecording) stopRecording();
+                                   else startRecording();
+                                }
+                             }}
+                          >
+                             {input.trim() ? <SendIcon /> : (isRecording ? <div className="w-3 h-3 bg-white rounded-sm"></div> : <MicIcon />)}
+                          </button>
+                       </div>
+                     </>
+                   )}
+                 </>
+               )}
+
+               {viewingImage && (
+                 <div className="fixed inset-0 z-[60] bg-black flex flex-col items-center justify-center animate-scaleIn">
+                    <div className="absolute top-4 right-4 z-50 flex gap-4">
+                        <button onClick={() => setImageZoom(z => Math.max(1, z - 0.5))} className="w-10 h-10 bg-gray-800/50 rounded-full text-white flex items-center justify-center text-xl backdrop-blur-sm border border-gray-600">－</button>
+                        <button onClick={() => setImageZoom(z => z + 0.5)} className="w-10 h-10 bg-gray-800/50 rounded-full text-white flex items-center justify-center text-xl backdrop-blur-sm border border-gray-600">＋</button>
+                        <button onClick={() => setViewingImage(null)} className="w-10 h-10 bg-red-500/80 rounded-full text-white flex items-center justify-center text-lg backdrop-blur-sm">✕</button>
+                    </div>
+                    <div className="w-full h-full overflow-hidden flex items-center justify-center p-2" onDoubleClick={() => setImageZoom(z => z === 1 ? 2 : 1)}>
+                        <img 
+                           src={viewingImage} 
+                           className="transition-transform duration-200 ease-out max-w-full max-h-full object-contain"
+                           style={{ transform: `scale(${imageZoom})`, cursor: 'zoom-in' }}
+                        />
+                    </div>
+                 </div>
+               )}
+            </div>
+          );
+        };
+
+        const CallScreen = ({ incoming, isInCall, onAccept, onReject, onEnd, localRef, remoteRef, status, isMuted, onToggleMute, dragHandlers }) => {
+           if(incoming && !isInCall) return (
+                <div className="absolute inset-0 bg-background/90 z-50 flex flex-col items-center justify-center">
+                    <h2 className="text-2xl mb-2 text-primary">{incoming.callerName}</h2>
+                    <div className="flex gap-8 mt-8">
+                       <button onClick={onReject} className="w-16 h-16 rounded-full bg-red-500 text-2xl flex items-center justify-center">✕</button>
+                       <button onClick={onAccept} className="w-16 h-16 rounded-full bg-green-500 text-2xl flex items-center justify-center">📞</button>
+                    </div>
+                </div>
+           );
+           return (
+             <div className="absolute inset-0 bg-black z-50 flex flex-col">
+                <div className="absolute top-10 w-full text-center z-10"><h2 className="text-xl font-semibold text-white">{status}</h2></div>
+                <div className="relative flex-1 bg-gray-900 overflow-hidden flex items-center justify-center">
+                   <video ref={remoteRef} autoPlay playsInline className="w-full h-full object-cover" />
+                   <video ref={localRef} autoPlay playsInline muted className="absolute w-[100px] h-[150px] bg-gray-800 border border-gray-600 rounded-lg object-cover cursor-grab z-20 shadow-lg" style={{ bottom: '120px', right: '20px', ...dragHandlers.style }}
+                      onMouseDown={dragHandlers.onMouseDown} onTouchStart={dragHandlers.onTouchStart} onMouseMove={dragHandlers.onMouseMove} onTouchMove={dragHandlers.onTouchMove} onMouseUp={dragHandlers.onMouseUp} onTouchEnd={dragHandlers.onTouchEnd}
+                   />
+                </div>
+                <div className="h-[100px] bg-black/80 flex items-center justify-center gap-6 absolute bottom-0 w-full z-30">
+                   <button onClick={onToggleMute} className={`w-12 h-12 rounded-full text-xl flex items-center justify-center ${isMuted ? 'bg-red-500' : 'bg-gray-700'} text-white`}>🎤</button>
+                   <button onClick={onEnd} className="w-12 h-12 rounded-full bg-red-600 text-xl flex items-center justify-center text-white">📞</button>
+                </div>
+             </div>
+           );
+        };
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
