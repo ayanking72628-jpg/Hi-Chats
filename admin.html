@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Hi-Chats Admin Panel</title>
+
+<script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-app.js"></script>
+<script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-auth.js"></script>
+<script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-database.js"></script>
+
+<style>
+
+body{
+font-family:Arial;
+background:#0f172a;
+color:white;
+margin:0;
+}
+
+header{
+background:#1e293b;
+padding:15px;
+font-size:20px;
+}
+
+.container{
+padding:20px;
+}
+
+button{
+background:#3b82f6;
+border:none;
+padding:10px 15px;
+color:white;
+border-radius:8px;
+cursor:pointer;
+}
+
+button:hover{
+background:#2563eb;
+}
+
+.card{
+background:#1e293b;
+padding:15px;
+margin:10px 0;
+border-radius:10px;
+}
+
+input{
+padding:8px;
+border-radius:6px;
+border:none;
+margin-right:10px;
+}
+
+</style>
+</head>
+
+<body>
+
+<header>
+Hi-Chats Admin Panel
+</header>
+
+<div class="container">
+
+<h2>Broadcast Message</h2>
+
+<input id="msg" placeholder="Type announcement">
+<button onclick="sendBroadcast()">Send</button>
+
+<h2>Users</h2>
+
+<button onclick="loadUsers()">Load Users</button>
+
+<div id="users"></div>
+
+</div>
+
+<script>
+
+const firebaseConfig = {
+  apiKey: "AIzaSyCopTzi_zndimqGxb7XTFqYTuO4494n0pY",
+  authDomain: "hi-chats-52224.firebaseapp.com",
+  databaseURL: "https://hi-chats-52224-default-rtdb.firebaseio.com",
+  projectId: "hi-chats-52224",
+  storageBucket: "hi-chats-52224.firebasestorage.app",
+  messagingSenderId: "307114875537",
+  appId: "1:307114875537:web:9e4dd787f07f88f4d9bd30"
+};
+
+firebase.initializeApp(firebaseConfig);
+
+// CHECK ADMIN
+
+firebase.auth().onAuthStateChanged(user=>{
+
+if(!user){
+alert("Login required");
+return;
+}
+
+firebase.database().ref("admins/"+user.uid)
+.once("value")
+.then(snap=>{
+
+if(!snap.exists()){
+alert("You are not admin");
+}
+
+});
+
+});
+
+// LOAD USERS
+
+function loadUsers(){
+
+document.getElementById("users").innerHTML="";
+
+firebase.database().ref("users")
+.once("value")
+.then(snapshot=>{
+
+snapshot.forEach(child=>{
+
+let uid = child.key;
+let data = child.val();
+
+let html = `
+<div class="card">
+
+<b>${data.name || "User"}</b><br>
+
+UID: ${uid}<br><br>
+
+<button onclick="banUser('${uid}')">Ban</button>
+
+<button onclick="deleteUser('${uid}')">Delete</button>
+
+</div>
+`;
+
+document.getElementById("users").innerHTML += html;
+
+});
+
+});
+
+}
+
+// BAN USER
+
+function banUser(uid){
+
+firebase.database()
+.ref("users/"+uid)
+.update({
+banned:true
+});
+
+alert("User banned");
+
+}
+
+// DELETE USER
+
+function deleteUser(uid){
+
+firebase.database()
+.ref("users/"+uid)
+.remove();
+
+alert("User deleted");
+
+}
+
+// BROADCAST MESSAGE
+
+function sendBroadcast(){
+
+let msg = document.getElementById("msg").value;
+
+firebase.database()
+.ref("announcements")
+.set({
+message:msg,
+time:Date.now()
+});
+
+alert("Broadcast sent");
+
+}
+
+</script>
+
+</body>
+</html>
